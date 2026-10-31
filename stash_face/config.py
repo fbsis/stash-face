@@ -34,6 +34,7 @@ class Settings:
     max_image_bytes: int = 20_000_000
     max_image_pixels: int = 40_000_000
     video_roots: tuple[Path, ...] = (Path("/mnt"),)
+    auto_tag_paths: tuple[str, ...] = ("/mnt",)
     video_frame_count: int = 6
 
     def __post_init__(self):
@@ -51,7 +52,7 @@ class Settings:
             raise ValueError("Invalid detection score or minimum size")
         if not 0 < self.cluster_eps <= 2 or self.min_faces < 2:
             raise ValueError("Invalid clustering configuration")
-        if self.video_frame_count != 6 or not self.video_roots:
+        if self.video_frame_count != 6 or not self.video_roots or not self.auto_tag_paths:
             raise ValueError("Video indexing requires exactly six frames and at least one allowed root")
 
     @classmethod
@@ -59,6 +60,7 @@ class Settings:
         data_dir = Path(os.getenv("FACE_DATA_DIR", "/var/lib/stash-face/local")).resolve()
         models_dir = Path(os.getenv("FACE_MODELS_DIR", "/var/lib/stash-face/models")).resolve()
         video_roots = tuple(Path(root).resolve() for root in os.getenv("FACE_VIDEO_ROOTS", "/mnt").split(":") if root)
+        auto_tag_paths = tuple(path for path in os.getenv("FACE_AUTO_TAG_PATHS", "/mnt").split(":") if path)
         return cls(
             stash_url=os.environ["STASH_URL"].rstrip("/"),
             stash_api_key=os.getenv("STASH_API_KEY", ""),
@@ -81,5 +83,6 @@ class Settings:
             max_image_bytes=int(os.getenv("FACE_MAX_IMAGE_BYTES", "20000000")),
             max_image_pixels=int(os.getenv("FACE_MAX_IMAGE_PIXELS", "40000000")),
             video_roots=video_roots,
+            auto_tag_paths=auto_tag_paths,
             video_frame_count=6,
         )

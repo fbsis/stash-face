@@ -36,6 +36,9 @@ class Worker:
             self.lock.close()
             raise RuntimeError("Another worker owns this database; use uvicorn --workers 1") from None
 
+        recovered = self.store.recover_running_jobs()
+        if recovered:
+            log.warning("Requeued %d jobs left running by a previous service instance.", recovered)
         worker_count = int(getattr(self.settings, "workers", 1))
         self.threads = [threading.Thread(target=self.run, name=f"face-worker-{index + 1}", daemon=True)
                         for index in range(worker_count)]
@@ -100,6 +103,7 @@ class Worker:
             "video": "extracting and embedding six frames",
             "cluster": "clustering embeddings",
             "sync_performers": "syncing Performer references",
+            "auto_tag": "matching names from file paths",
             "forget": "removing deleted media",
         }.get(job["kind"], "processing")
 
@@ -123,6 +127,8 @@ class Worker:
             return {"forgotten": self.store.forget_image(payload["image_id"])}
         elif kind == "sync_performers":
             return self.sync_performers()
+        elif kind == "auto_tag":
+            return self.auto_tag(payload)
         raise ValueError(f"Unknown job kind: {kind}")
 
     def scan(self, payload: dict) -> dict:
@@ -195,6 +201,7 @@ class Worker:
 
         if enqueued > 0:
             self.store.enqueue("cluster", {}, "cluster:after-scan")
+            self.store.enqueue("auto_tag", {"paths": list(self.settings.auto_tag_paths)}, "auto_tag:after-scan")
 
         return {"enqueued": enqueued, "unchanged": skipped, "images_seen": len(seen), "videos_seen": video_count}
 
@@ -351,6 +358,15 @@ class Worker:
                 self.stash.add_scene_performers([scene_id], list(matched))
             except Exception as exc:
                 log.warning("Failed to auto-tag scene %s in Stash: %s", scene_id, exc)
+
+    def auto_tag(self, payload: dict) -> dict:
+        paths = payload.get("paths") or list(self.settings.auto_tag_paths)
+        self.progress("matching names from file paths", ":".join(paths))
+        applied = self.stash.auto_tag_content(paths)
+        if not applied:
+            raise UpstreamError("Stash did not accept metadata auto-tag request", retryable=True)
+        log.info("Requested Stash auto-tag from paths: %s", paths)
+        return {"accepted": True, "paths": paths}
 
     def run_clustering(self) -> dict:
         if self.store.has_pending_media_jobs():

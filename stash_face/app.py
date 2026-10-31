@@ -109,7 +109,7 @@ def create_app() -> FastAPI:
 
     @app.post("/jobs")
     def enqueue_job(req: JobRequest, _: None = Depends(auth_dep)):
-        if req.action not in ("scan", "cluster", "sync_performers", "image", "video", "forget"):
+        if req.action not in ("scan", "cluster", "sync_performers", "auto_tag", "image", "video", "forget"):
             raise HTTPException(status_code=400, detail="Unsupported action")
 
         payload = {"force": req.force}

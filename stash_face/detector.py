@@ -67,8 +67,10 @@ class Detector:
             providers=providers,
         )
         self.app.prepare(ctx_id=-1, det_size=(640, 640))
-        self.signature = (f"insightface:{self.model_name}:arcface512:{self.min_score}:{self.min_size}:"
-                          f"{self.execution_provider}:v3")
+        # Provider changes (CPU/GPU) do not change the embedding model output;
+        # keep the media fingerprint stable so switching accelerators never requeues
+        # an already indexed library.
+        self.signature = f"insightface:{self.model_name}:arcface512:{self.min_score}:{self.min_size}:v2"
         log.info("InsightFace initialized with %s on %s", self.model_name, self.device)
 
     def info(self) -> dict:

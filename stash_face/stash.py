@@ -123,6 +123,15 @@ class StashClient:
         }})
         return bool(result.get("bulkImageUpdate"))
 
+    def auto_tag_content(self, paths: List[str]) -> bool:
+        result = self.gql("""mutation MetadataAutoTag($input:AutoTagMetadataInput!) {
+            metadataAutoTag(input:$input)
+        }""", {"input": {
+            "paths": [str(path) for path in paths],
+            "performers": [], "studios": [], "tags": [],
+        }})
+        return bool(result.get("metadataAutoTag"))
+
     def add_scene_performers(self, scene_ids: List[str], performer_ids: List[str]) -> bool:
         if not scene_ids or not performer_ids:
             return True

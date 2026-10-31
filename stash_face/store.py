@@ -520,6 +520,15 @@ class Store:
                 ).fetchone()
                 return (row[0], False) if row else (job_id, False)
 
+    def recover_running_jobs(self) -> int:
+        with self.connection() as con:
+            cur = con.execute(
+                """UPDATE jobs SET state='queued', stage='queued', detail='recovered after service restart',
+                   next_attempt=?, updated_at=? WHERE state='running'""",
+                (time.time(), time.time()),
+            )
+            return cur.rowcount
+
     def claim(self) -> Optional[dict]:
         now = time.time()
         with self.connection() as con:

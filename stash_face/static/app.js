@@ -135,6 +135,7 @@ function jobSteps(kind) {
     video: ["extract six frames", "detect and embed faces", "save frame results", "tag scene"],
     cluster: ["load embeddings", "DBSCAN", "preserve links"],
     sync_performers: ["download references", "detect face", "save reference"],
+    auto_tag: ["read file paths", "match existing names", "apply Stash metadata"],
   }[kind] || ["process"];
 }
 

@@ -14,6 +14,9 @@ tasks:
   - name: Index Photos & Videos (6 Frames per Video)
     defaultArgs:
       action: scan
+  - name: Auto-tag Content from File Paths
+    defaultArgs:
+      action: auto_tag
   - name: Re-cluster Faces (DBSCAN)
     defaultArgs:
       action: cluster

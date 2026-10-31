@@ -90,6 +90,16 @@ def create_app() -> FastAPI:
     def progress(_: None = Depends(auth_dep)):
         return store.progress()
 
+    @app.get("/faces")
+    def faces(
+        face_filter: str = Query("all", alias="filter", pattern="^(all|clustered|unclustered|named|unknown)$"),
+        q: str = "",
+        limit: int = 100,
+        offset: int = 0,
+        _: None = Depends(auth_dep),
+    ):
+        return store.faces_page(face_filter, q, limit, offset)
+
     @app.get("/media")
     def media(
         status_filter: str = Query("all", alias="status"),

@@ -61,6 +61,7 @@
       <div class="view-pills">
         <button id="view-people" class="pill active">People</button>
         <button id="view-media" class="pill">Media Index</button>
+        <button id="view-faces" class="pill">All Faces</button>
       </div>
       <div class="search-box">
         <span class="search-icon">🔍</span>
@@ -82,6 +83,23 @@
         <h3>No people found</h3>
         <p>Click <strong>Scan Library</strong> to start detecting and recognizing faces in your Stash collection.</p>
       </div>
+    </section>
+
+    <section id="faces-panel" class="media-panel" hidden>
+      <div class="media-toolbar">
+        <h2>All Faces</h2>
+        <select id="faces-filter">
+          <option value="all">All faces</option>
+          <option value="clustered">Grouped</option>
+          <option value="unclustered">Not grouped</option>
+          <option value="named">Named / linked</option>
+          <option value="unknown">Unknown</option>
+        </select>
+        <input id="faces-search" class="faces-search" type="search" placeholder="Search title or person">
+      </div>
+      <p id="faces-progress" class="media-progress">Loading faces...</p>
+      <div id="faces-list" class="faces-list"></div>
+      <button id="faces-load-more" class="btn btn-secondary" hidden>Load more faces</button>
     </section>
 
     <section id="media-panel" class="media-panel" hidden>

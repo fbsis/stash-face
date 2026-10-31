@@ -355,6 +355,55 @@ body {
   margin-bottom: 1rem;
 }
 
+.faces-search {
+  min-width: 190px;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-main);
+}
+
+.faces-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 0.75rem;
+}
+
+.face-card {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+}
+
+.face-card img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  background: var(--bg-card);
+}
+
+.face-card-info {
+  padding: 0.55rem;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.face-card-title {
+  overflow: hidden;
+  margin-bottom: 0.25rem;
+  color: var(--text-main);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.face-card-state { color: var(--primary); }
+.face-card-source { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#faces-load-more { margin-top: 1rem; }
+
 .processing-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(280px, 0.45fr);

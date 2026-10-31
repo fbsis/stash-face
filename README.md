@@ -140,6 +140,12 @@ is linked.
 - `POST /jobs` with `scan`, `image`, `cluster`, `sync_performers`, or `forget`
 - `GET /people`
 - `GET /people/{id}`
+- `GET /faces?filter=all|clustered|unclustered|named|unknown`
+
+The dashboard's **All Faces** view displays paginated face crops with filters for
+all, grouped, ungrouped, named/linked, and unknown faces. Original Stash media
+is read through the Stash API or mounted media path and is not copied into the
+service data directory; only private crops, embeddings, and metadata are stored.
 - `PATCH /people/{id}`
 - `POST /people/{id}/link-performer`
 - `POST /people/{id}/create-performer`

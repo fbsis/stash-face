@@ -202,6 +202,44 @@ class Store:
             ).fetchone()
             return bool(row and row["total"] and row["total"] == row["ready"])
 
+    def faces_page(self, filter_type: str = "all", q: str = "", limit: int = 100, offset: int = 0) -> Dict[str, Any]:
+        where = ["f.active=1"]
+        params: List[Any] = []
+        if filter_type == "clustered":
+            where.append("f.cluster_id IS NOT NULL")
+        elif filter_type == "unclustered":
+            where.append("f.cluster_id IS NULL")
+        elif filter_type == "named":
+            where.append("(f.performer_id IS NOT NULL OR c.performer_id IS NOT NULL)")
+        elif filter_type == "unknown":
+            where.append("f.performer_id IS NULL AND c.performer_id IS NULL")
+        if q:
+            where.append("(coalesce(i.title, '') LIKE ? OR coalesce(c.name, '') LIKE ? OR coalesce(f.performer_id, '') LIKE ?)")
+            term = f"%{q}%"
+            params.extend([term, term, term])
+        clause = " AND ".join(where)
+        with self.connection() as con:
+            total = con.execute(
+                f"""SELECT count(*) FROM faces f
+                    LEFT JOIN images i ON i.id=f.image_id
+                    LEFT JOIN clusters c ON c.id=f.cluster_id
+                    WHERE {clause}""", params,
+            ).fetchone()[0]
+            rows = con.execute(
+                f"""SELECT f.id, f.image_id, f.crop, f.score, f.gender, f.age,
+                          f.cluster_id, f.performer_id, f.matched_by,
+                          coalesce(i.title, '') AS title, c.name AS cluster_name,
+                          c.performer_id AS cluster_performer_id,
+                          m.media_type, m.source_id, m.frame_index, m.frame_time
+                   FROM faces f
+                   LEFT JOIN images i ON i.id=f.image_id
+                   LEFT JOIN clusters c ON c.id=f.cluster_id
+                   LEFT JOIN media m ON m.media_key=f.image_id
+                   WHERE {clause}
+                   ORDER BY f.id DESC LIMIT ? OFFSET ?""", params + [min(max(limit, 1), 500), max(offset, 0)],
+            ).fetchall()
+            return {"total": total, "items": [dict(row) for row in rows]}
+
     def media_page(self, status: str = "all", media_type: str = "all", limit: int = 100, offset: int = 0) -> Dict[str, Any]:
         where, params = [], []
         if status != "all":

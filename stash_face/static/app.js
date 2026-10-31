@@ -8,6 +8,7 @@ let selectedPerson = null;
 let allPeople = [];
 let progressTimer = null;
 let selectedJobId = null;
+let facesOffset = 0;
 const cropUrls = new Set();
 
 async function setCropImage(img, filename) {
@@ -191,6 +192,35 @@ async function loadJobs() {
     }
   } catch (err) {
     $("job-refresh-state").textContent = "Unavailable";
+  }
+}
+
+async function loadFaces(reset = true) {
+  try {
+    if (reset) { facesOffset = 0; $("faces-list").replaceChildren(); }
+    const filter = $("faces-filter").value;
+    const q = $("faces-search").value.trim();
+    const result = await api(`/faces?filter=${encodeURIComponent(filter)}&q=${encodeURIComponent(q)}&limit=100&offset=${facesOffset}`);
+    const list = $("faces-list");
+    if (reset && !result.items.length) list.textContent = "No faces match this filter.";
+    for (const face of result.items) {
+      const card = document.createElement("article"); card.className = "face-card";
+      const img = document.createElement("img"); img.loading = "lazy"; img.alt = "Detected face";
+      setCropImage(img, face.crop);
+      const info = document.createElement("div"); info.className = "face-card-info";
+      const title = document.createElement("div"); title.className = "face-card-title";
+      title.textContent = face.cluster_name || "Not grouped";
+      const state = document.createElement("div"); state.className = "face-card-state";
+      state.textContent = face.performer_id || face.cluster_performer_id ? `Linked Performer #${face.performer_id || face.cluster_performer_id}` : "Unknown identity";
+      const source = document.createElement("div"); source.className = "face-card-source";
+      source.textContent = `${face.media_type || "image"} · ${face.title || face.source_id || `ID ${face.image_id}`} · score ${Number(face.score || 0).toFixed(2)}`;
+      info.append(title, state, source); card.append(img, info); list.append(card);
+    }
+    facesOffset += result.items.length;
+    $("faces-progress").textContent = `${facesOffset} of ${result.total} faces shown`;
+    $("faces-load-more").hidden = facesOffset >= result.total;
+  } catch (err) {
+    notify("Error loading faces: " + err.message);
   }
 }
 
@@ -378,18 +408,27 @@ $("btn-sync-performers").onclick = async () => {
   }
 };
 
-// People / Media views
-$("view-people").onclick = () => {
-  $("view-people").classList.add("active"); $("view-media").classList.remove("active");
-  $("people-section").hidden = false; $("media-panel").hidden = true;
-};
-$("view-media").onclick = () => {
-  $("view-media").classList.add("active"); $("view-people").classList.remove("active");
-  $("people-section").hidden = true; $("media-panel").hidden = false;
-  loadMedia(); loadProgress();
-};
+// People / Media / All Faces views
+function setView(view) {
+  const people = view === "people", media = view === "media";
+  $("view-people").classList.toggle("active", people);
+  $("view-media").classList.toggle("active", media);
+  $("view-faces").classList.toggle("active", view === "faces");
+  $("people-section").hidden = !people;
+  $("media-panel").hidden = !media;
+  $("faces-panel").hidden = view !== "faces";
+}
+$("view-people").onclick = () => setView("people");
+$("view-media").onclick = () => { setView("media"); loadMedia(); loadProgress(); };
+$("view-faces").onclick = () => { setView("faces"); loadFaces(); };
 $("media-status-filter").onchange = loadMedia;
 $("media-type-filter").onchange = loadMedia;
+$("faces-filter").onchange = () => loadFaces(true);
+$("faces-search").oninput = () => {
+  clearTimeout(searchDebounce);
+  searchDebounce = setTimeout(() => loadFaces(true), 300);
+};
+$("faces-load-more").onclick = () => loadFaces(false);
 $("close-job-detail").onclick = () => { $("job-detail").hidden = true; selectedJobId = null; };
 
 // Filter Pills

@@ -1,0 +1,10 @@
+version: 1
+name: Local Stash review contract
+slug: stash-review-contract
+protocol: http
+port: 49171
+interceptRequests: true
+scenarios:
+  - name: default
+    path: ./default.js
+    default: true

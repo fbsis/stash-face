@@ -1,0 +1,11 @@
+{
+  "name": "stash-face-ui-tests",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "test": "node --test tests/ui.test.cjs"
+  },
+  "devDependencies": {
+    "jsdom": "^26.1.0"
+  }
+}

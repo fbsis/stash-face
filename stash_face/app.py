@@ -1,0 +1,221 @@
+"""FastAPI application for Immich-style Face Recognition and Stash integration."""
+import base64
+import logging
+from pathlib import Path
+from typing import Any, List, Optional
+
+from fastapi import Depends, FastAPI, HTTPException, Query, Security, status
+from fastapi.responses import FileResponse, Response
+from fastapi.security import APIKeyHeader
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+
+from .config import Settings
+from .detector import Detector
+from .stash import StashClient
+from .store import Store
+from .worker import Worker
+
+log = logging.getLogger(__name__)
+
+api_token = APIKeyHeader(name="X-API-Token", auto_error=False)
+
+
+def check_auth(settings: Settings, provided: Optional[str] = Security(api_token)):
+    if not provided or provided != settings.token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API token")
+
+
+class JobRequest(BaseModel):
+    action: str = Field(..., description="'scan', 'cluster', or 'sync_performers'")
+    image_id: Optional[str] = None
+    force: bool = False
+
+
+class UpdatePersonRequest(BaseModel):
+    name: Optional[str] = None
+    hidden: Optional[bool] = None
+
+
+class LinkPerformerRequest(BaseModel):
+    performer_id: str
+    performer_name: str
+
+
+class CreatePerformerRequest(BaseModel):
+    name: str
+
+
+class MergePersonRequest(BaseModel):
+    target_id: int
+
+
+def create_app() -> FastAPI:
+    settings = Settings.from_env()
+    store = Store(settings.data_dir)
+    stash = StashClient(settings)
+    detector = Detector(settings)
+    worker = Worker(settings, store, stash, detector)
+
+    app = FastAPI(title="Stash Face Recognition", version="1.0.0", docs_url=None, redoc_url=None)
+
+    @app.on_event("startup")
+    def startup():
+        worker.start()
+
+    @app.on_event("shutdown")
+    def shutdown():
+        worker.stop()
+
+    def auth_dep(tok: Optional[str] = Security(api_token)):
+        return check_auth(settings, tok)
+
+    @app.get("/health")
+    def health(_: None = Depends(auth_dep)):
+        return {
+            "status": "ok",
+            "version": "1.0.0",
+            "stash_url": settings.stash_url,
+            "worker_alive": bool(worker.thread and worker.thread.is_alive()),
+            "detector": detector.info(),
+            "stats": store.stats(),
+        }
+
+    @app.get("/stats")
+    def stats(_: None = Depends(auth_dep)):
+        return store.stats()
+
+    @app.get("/stash/status")
+    def stash_status(_: None = Depends(auth_dep)):
+        return {"version": stash.gql("{ version { version } }").get("version", {})}
+
+    @app.post("/jobs")
+    def enqueue_job(req: JobRequest, _: None = Depends(auth_dep)):
+        if req.action not in ("scan", "cluster", "sync_performers", "image", "forget"):
+            raise HTTPException(status_code=400, detail="Unsupported action")
+
+        payload = {"force": req.force}
+        if req.action in ("image", "forget"):
+            if not req.image_id:
+                raise HTTPException(status_code=400, detail=f"image_id required for {req.action} job")
+            payload["image_id"] = req.image_id
+            dedupe_key = f"{req.action}:{req.image_id}:{req.force}"
+        else:
+            dedupe_key = f"{req.action}:{req.force}:{int(req.force)}"
+
+        job_id, created = store.enqueue(req.action, payload, dedupe_key)
+        return {"job_id": job_id, "created": created, "action": req.action}
+
+    @app.get("/jobs")
+    def list_jobs(limit: int = 15, _: None = Depends(auth_dep)):
+        return store.jobs(limit=limit)
+
+    @app.get("/people")
+    def list_people(
+        q: str = "",
+        filter: str = Query("all", regex="^(all|named|unnamed|hidden)$"),
+        _: None = Depends(auth_dep),
+    ):
+        return store.get_clusters(q=q, filter_type=filter)
+
+    @app.get("/people/{cluster_id}")
+    def get_person(cluster_id: int, _: None = Depends(auth_dep)):
+        person = store.get_cluster(cluster_id)
+        if not person:
+            raise HTTPException(status_code=404, detail="Person not found")
+        return person
+
+    @app.patch("/people/{cluster_id}")
+    def update_person(cluster_id: int, req: UpdatePersonRequest, _: None = Depends(auth_dep)):
+        if req.name is not None:
+            store.update_cluster_name(cluster_id, req.name)
+        if req.hidden is not None:
+            store.hide_cluster(cluster_id, req.hidden)
+        return {"success": True}
+
+    @app.post("/people/{cluster_id}/link-performer")
+    def link_performer(cluster_id: int, req: LinkPerformerRequest, _: None = Depends(auth_dep)):
+        image_ids = store.link_cluster_to_performer(cluster_id, req.performer_id, req.performer_name)
+        embedding = store.cluster_embedding(cluster_id)
+        if embedding is not None:
+            performer = stash.performer(req.performer_id) or {}
+            store.save_known_performer(req.performer_id, req.performer_name,
+                                       performer.get("image_path", ""), embedding)
+        if image_ids and settings.auto_tag_stash:
+            try:
+                stash.add_performers(image_ids, [req.performer_id])
+            except Exception as e:
+                log.warning("Could not auto-tag Stash images for cluster %s: %s", cluster_id, e)
+        return {"success": True, "tagged_images": len(image_ids)}
+
+    @app.post("/people/{cluster_id}/create-performer")
+    def create_performer_from_person(cluster_id: int, req: CreatePerformerRequest, _: None = Depends(auth_dep)):
+        person = store.get_cluster(cluster_id)
+        if not person:
+            raise HTTPException(status_code=404, detail="Person not found")
+
+        # Encode exemplar crop as data URI if present
+        data_uri = ""
+        if person.get("exemplar_crop"):
+            crop_path = store.crops / person["exemplar_crop"]
+            if crop_path.exists():
+                b64 = base64.b64encode(crop_path.read_bytes()).decode("utf-8")
+                data_uri = f"data:image/jpeg;base64,{b64}"
+
+        # Create performer in Stash
+        created = stash.create_performer(req.name, data_uri)
+        new_id = str(created["id"])
+        image_ids = store.link_cluster_to_performer(cluster_id, new_id, req.name)
+        embedding = store.cluster_embedding(cluster_id)
+        if embedding is not None:
+            store.save_known_performer(new_id, req.name, created.get("image_path", ""), embedding)
+
+        if image_ids and settings.auto_tag_stash:
+            try:
+                stash.add_performers(image_ids, [new_id])
+            except Exception as e:
+                log.warning("Failed to bulk tag in Stash: %s", e)
+
+        return {"success": True, "performer_id": new_id, "name": req.name, "tagged_images": len(image_ids)}
+
+    @app.post("/people/{cluster_id}/merge")
+    def merge_person(cluster_id: int, req: MergePersonRequest, _: None = Depends(auth_dep)):
+        if cluster_id == req.target_id:
+            raise HTTPException(status_code=400, detail="Cannot merge person into itself")
+        success = store.merge_clusters(source_id=cluster_id, target_id=req.target_id)
+        return {"success": success}
+
+    @app.get("/faces/{face_id}/crop")
+    def get_crop(face_id: int, _: None = Depends(auth_dep)):
+        with store.connection() as con:
+            row = con.execute("SELECT crop FROM faces WHERE id=?", (face_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Face not found")
+        path = store.crops / row["crop"]
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="Crop file not found")
+        return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})
+
+    @app.get("/crops/{filename}")
+    def get_crop_by_filename(filename: str, _: None = Depends(auth_dep)):
+        # Sanitization: no directory traversal
+        safe_name = Path(filename).name
+        path = store.crops / safe_name
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="Crop file not found")
+        return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})
+
+    @app.get("/performers")
+    def search_performers(q: str = "", _: None = Depends(auth_dep)):
+        return stash.performers(q=q)
+
+    # Static assets
+    static_dir = Path(__file__).parent / "static"
+    if static_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(static_dir)), name="assets")
+
+        @app.get("/")
+        def serve_index():
+            return FileResponse(static_dir / "index.html")
+
+    return app

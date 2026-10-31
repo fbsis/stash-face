@@ -1,0 +1,34 @@
+name: Stash Face Recognition
+description: Automatic face recognition, clustering and performer assignment (Immich-style).
+version: 1.0.0
+url: https://github.com/fbsis/stash-face
+exec:
+  - python3
+  - "{pluginDir}/stash_face_review.py"
+interface: raw
+errLog: info
+tasks:
+  - name: Test Remote Connection
+    defaultArgs:
+      action: health
+  - name: Scan & Recognize Faces
+    defaultArgs:
+      action: scan
+  - name: Re-cluster Faces (DBSCAN)
+    defaultArgs:
+      action: cluster
+  - name: Sync Performers from Stash
+    defaultArgs:
+      action: sync_performers
+hooks:
+  - name: Auto-Recognize Created or Updated Image
+    triggeredBy:
+      - Image.Create.Post
+      - Image.Update.Post
+    defaultArgs:
+      action: image
+  - name: Forget Deleted Image
+    triggeredBy:
+      - Image.Destroy.Post
+    defaultArgs:
+      action: forget

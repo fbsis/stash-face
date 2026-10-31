@@ -1,0 +1,28 @@
+name: Tests
+on: [push, pull_request]
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/checkout@v4
+        with:
+          repository: stashapp/stash
+          ref: v0.31.1
+          path: .reference-stash
+          sparse-checkout: graphql/schema
+      - run: pip install '.[test]'
+      - run: ruff check stash_face plugin scripts tests
+      - run: pytest -q -m 'not integration'
+        env:
+          STASH_SCHEMA_DIR: .reference-stash/graphql/schema
+      - run: python scripts/export-openapi.py && git diff --exit-code -- docs/openapi.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --ignore-scripts && npm test
+      - run: node --check stash_face/static/app.js && node --check postman/mocks/stash/default.js
+      - run: bash -n scripts/install-native.sh

@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stash Face Recognition — Immich-Style AI Recognition</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <!-- Main Header -->
+  <header class="app-header">
+    <div class="header-left">
+      <div class="logo">
+        <span class="logo-icon">👤</span>
+        <div class="logo-text">
+          <h1>Stash Face</h1>
+          <span class="subtext">Facial Recognition & Automatic Clustering</span>
+        </div>
+      </div>
+      <div id="stats-bar" class="stats-bar" hidden>
+        <div class="stat-item"><strong id="stat-people">0</strong> people</div>
+        <div class="stat-item"><strong id="stat-faces">0</strong> faces</div>
+        <div class="stat-item"><strong id="stat-images">0</strong> photos</div>
+      </div>
+    </div>
+
+    <div class="header-right">
+      <!-- Connection Form (Visible only when disconnected) -->
+      <form id="connect-form" class="connect-form">
+        <input id="token" type="password" placeholder="Service Secret Token (FACE_TOKEN)" autocomplete="off" required>
+        <button type="submit" class="btn btn-primary">Connect</button>
+      </form>
+
+      <!-- Action Controls (Visible when connected) -->
+      <div id="action-controls" class="action-controls" hidden>
+        <button id="btn-scan" class="btn btn-action" title="Scan new images from Stash">
+          <span>🔍</span> Scan Library
+        </button>
+        <button id="btn-cluster" class="btn btn-action" title="Group similar faces with DBSCAN">
+          <span>⚡</span> Re-cluster
+        </button>
+        <button id="btn-sync-performers" class="btn btn-action" title="Sync Performers and avatars from Stash">
+          <span>🔄</span> Sync Performers
+        </button>
+        <button id="btn-disconnect" class="btn btn-ghost" title="Disconnect and forget token">Disconnect</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Status / Notification Banner -->
+  <div id="status-banner" class="status-banner" hidden>
+    <span id="status-message"></span>
+  </div>
+
+  <!-- Main Workspace -->
+  <main id="workspace" class="workspace" hidden>
+    <!-- Search and Filter Toolbar -->
+    <section class="toolbar">
+      <div class="search-box">
+        <span class="search-icon">🔍</span>
+        <input id="search-input" type="text" placeholder="Search people by name or ID..." maxlength="100">
+      </div>
+      <div class="filter-pills">
+        <button class="pill active" data-filter="all">All</button>
+        <button class="pill" data-filter="unnamed">Unnamed</button>
+        <button class="pill" data-filter="named">Linked</button>
+        <button class="pill" data-filter="hidden">Hidden</button>
+      </div>
+    </section>
+
+    <!-- People Grid (Immich-Style) -->
+    <section class="people-section">
+      <div id="people-grid" class="people-grid"></div>
+      <div id="empty-state" class="empty-state" hidden>
+        <span class="empty-icon">👥</span>
+        <h3>No people found</h3>
+        <p>Click <strong>Scan Library</strong> to start detecting and recognizing faces in your Stash collection.</p>
+      </div>
+    </section>
+  </main>
+
+  <!-- Person Detail Modal -->
+  <div id="person-modal" class="modal" hidden>
+    <div class="modal-backdrop" id="modal-backdrop"></div>
+    <div class="modal-card">
+      <button class="modal-close" id="modal-close">×</button>
+
+      <div class="person-detail-header">
+        <img id="modal-avatar" class="modal-avatar" src="" alt="Avatar">
+        <div class="person-detail-info">
+          <div class="name-editor">
+            <input id="modal-name-input" type="text" placeholder="Person Name..." maxlength="100">
+            <button id="modal-save-name-btn" class="btn btn-small">Save Name</button>
+          </div>
+          <div class="person-meta">
+            <span id="modal-face-count" class="badge">0 photos</span>
+            <span id="modal-performer-badge" class="badge badge-success" hidden>Linked to Stash</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Main Actions -->
+      <div class="person-actions">
+        <!-- Create Performer in Stash -->
+        <button id="modal-create-performer-btn" class="btn btn-primary">
+          <span>➕</span> Create Performer in Stash
+        </button>
+
+        <!-- Link to Existing Stash Performer -->
+        <div class="link-performer-box">
+          <input id="modal-performer-search" type="text" placeholder="Search Performer in Stash...">
+          <button id="modal-link-performer-btn" class="btn btn-secondary">Link</button>
+        </div>
+
+        <!-- Merge -->
+        <div class="merge-box">
+          <select id="modal-merge-select"></select>
+          <button id="modal-merge-btn" class="btn btn-ghost">Merge</button>
+        </div>
+
+        <button id="modal-hide-btn" class="btn btn-ghost btn-danger">Hide</button>
+      </div>
+
+      <!-- Faces Grid for this Person -->
+      <div class="person-faces-container">
+        <h4>Photos of this Person</h4>
+        <div id="modal-faces-grid" class="modal-faces-grid"></div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

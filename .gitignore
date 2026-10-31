@@ -1,0 +1,17 @@
+.venv/
+node_modules/
+.reference-stash/
+.env
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+data/
+dist/
+build/
+*.sqlite*
+*.ndjson
+*.log
+plugin/stash_face.json
+postman/.dependencies/

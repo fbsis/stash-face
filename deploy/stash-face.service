@@ -1,0 +1,3 @@
+# Deprecated compatibility unit.
+# New installations use deploy/stash-face@.service and one instance per Stash.
+# Do not install this file; it is retained only for older checkouts.

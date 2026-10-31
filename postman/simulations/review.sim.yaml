@@ -1,0 +1,5 @@
+simulation: stash-face-review
+routing: path
+mocks:
+  - routeKey: stash
+    path: ../mocks/stash/config.yaml

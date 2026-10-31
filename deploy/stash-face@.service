@@ -1,0 +1,28 @@
+[Unit]
+Description=Stash Face Recognition (%i)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=stash-face
+Group=stash-face
+SupplementaryGroups=kvm
+WorkingDirectory=/var/lib/stash-face/%i
+Environment=FACE_BIND=127.0.0.1
+Environment=PYTHONDONTWRITEBYTECODE=1
+EnvironmentFile=/etc/stash-face/%i.env
+ExecStart=/opt/stash-face/.venv/bin/uvicorn stash_face.app:create_app --factory --host ${FACE_BIND} --port ${FACE_PORT} --workers 1 --no-access-log
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=60
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/stash-face/%i
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

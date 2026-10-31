@@ -37,25 +37,46 @@ class Detector:
         self.models_dir = getattr(settings, "models_dir", Path("/var/lib/stash-face/models"))
         self.min_score = float(getattr(settings, "min_score", 0.5))
         self.min_size = int(getattr(settings, "min_size", 40))
+        requested_device = str(getattr(settings, "device", "AUTO")).upper()
         self.device = "CPU"
-        self.app = None
+        self.execution_provider = "CPUExecutionProvider"
+        providers = ["CPUExecutionProvider"]
+
+        if requested_device in ("AUTO", "GPU"):
+            try:
+                import onnxruntime as ort
+                import openvino as ov
+                available = set(ort.get_available_providers())
+                devices = set(ov.Core().available_devices)
+                if "OpenVINOExecutionProvider" in available and any(device.startswith("GPU") for device in devices):
+                    providers = [("OpenVINOExecutionProvider", {"device_type": "GPU"}),
+                                 "CPUExecutionProvider"]
+                    self.device = "GPU"
+                    self.execution_provider = "OpenVINOExecutionProvider"
+                elif requested_device == "GPU":
+                    log.warning("FACE_DEVICE=GPU requested, but OpenVINO reports no GPU; falling back to CPU")
+            except Exception as exc:
+                if requested_device == "GPU":
+                    log.warning("GPU provider unavailable (%s); falling back to CPU", exc)
 
         from insightface.app import FaceAnalysis
 
         self.app = FaceAnalysis(
             name=self.model_name,
             root=str(self.models_dir),
-            providers=["CPUExecutionProvider"],
+            providers=providers,
         )
         self.app.prepare(ctx_id=-1, det_size=(640, 640))
-        self.signature = f"insightface:{self.model_name}:arcface512:{self.min_score}:{self.min_size}:v2"
-        log.info("InsightFace initialized with %s on CPU", self.model_name)
+        self.signature = (f"insightface:{self.model_name}:arcface512:{self.min_score}:{self.min_size}:"
+                          f"{self.execution_provider}:v3")
+        log.info("InsightFace initialized with %s on %s", self.model_name, self.device)
 
     def info(self) -> dict:
         return {
             "provider": "insightface",
             "model_name": self.model_name,
             "actual_device": self.device,
+            "execution_provider": self.execution_provider,
             "embeddings": True,
             "min_score": self.min_score,
             "min_size": self.min_size,

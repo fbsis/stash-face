@@ -76,7 +76,8 @@ def create_app() -> FastAPI:
             "status": "ok",
             "version": "1.0.0",
             "stash_url": settings.stash_url,
-            "worker_alive": bool(worker.thread and worker.thread.is_alive()),
+            "worker_alive": any(thread.is_alive() for thread in worker.threads),
+            "worker_threads": len(worker.threads),
             "detector": detector.info(),
             "stats": store.stats(),
         }
@@ -85,13 +86,30 @@ def create_app() -> FastAPI:
     def stats(_: None = Depends(auth_dep)):
         return store.stats()
 
+    @app.get("/progress")
+    def progress(_: None = Depends(auth_dep)):
+        return store.progress()
+
+    @app.get("/media")
+    def media(
+        status_filter: str = Query("all", alias="status"),
+        media_type: str = Query("all", pattern="^(all|image|video)$"),
+        limit: int = 100,
+        offset: int = 0,
+        _: None = Depends(auth_dep),
+    ):
+        allowed = {"all", "unindexed", "indexed", "clustered", "approved", "no_faces", "ignored", "failed"}
+        if status_filter not in allowed:
+            raise HTTPException(status_code=400, detail="Unsupported media status")
+        return store.media_page(status_filter, media_type, limit, offset)
+
     @app.get("/stash/status")
     def stash_status(_: None = Depends(auth_dep)):
         return {"version": stash.gql("{ version { version } }").get("version", {})}
 
     @app.post("/jobs")
     def enqueue_job(req: JobRequest, _: None = Depends(auth_dep)):
-        if req.action not in ("scan", "cluster", "sync_performers", "image", "forget"):
+        if req.action not in ("scan", "cluster", "sync_performers", "image", "video", "forget"):
             raise HTTPException(status_code=400, detail="Unsupported action")
 
         payload = {"force": req.force}
@@ -107,8 +125,8 @@ def create_app() -> FastAPI:
         return {"job_id": job_id, "created": created, "action": req.action}
 
     @app.get("/jobs")
-    def list_jobs(limit: int = 15, _: None = Depends(auth_dep)):
-        return store.jobs(limit=limit)
+    def list_jobs(limit: int = 100, _: None = Depends(auth_dep)):
+        return store.jobs(limit=min(max(limit, 1), 500))
 
     @app.get("/people")
     def list_people(

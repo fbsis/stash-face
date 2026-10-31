@@ -3,6 +3,10 @@ import hashlib
 import io
 import json
 import logging
+import os
+import shutil
+import subprocess
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin, urlsplit
 
@@ -15,6 +19,9 @@ IMAGE_FIELDS = """id title updated_at paths { image } performers { id name }
 visual_files { __typename ... on ImageFile { id mod_time size fingerprints { type value } } }"""
 IMAGES = "query ReviewImages($page:Int!) { findImages(filter:{page:$page,per_page:100,sort:\"id\",direction:ASC}) { count images { " + IMAGE_FIELDS + " } } }"
 IMAGE = "query ReviewImage($id:ID!) { findImage(id:$id) { " + IMAGE_FIELDS + " } }"
+SCENES = """query ReviewScenes($page:Int!) { findScenes(filter:{page:$page,per_page:100,sort:\"id\",direction:ASC}) {
+ count scenes { id title updated_at paths { screenshot preview } files { __typename ... on VideoFile {
+ id path mod_time size duration width height } } } } }"""
 PERFORMERS = """query ReviewPerformers($page:Int!,$q:String!) {
  findPerformers(filter:{page:$page,per_page:50,q:$q,sort:"name",direction:ASC}) {
  count performers { id name image_path } } }"""
@@ -92,6 +99,13 @@ class StashClient:
             raise UpstreamError("Invalid image page from Stash")
         return result
 
+    def scene_page(self, page: int) -> dict:
+        data = self.gql(SCENES, {"page": page})
+        result = data.get("findScenes", {})
+        if not isinstance(result.get("scenes"), list) or not isinstance(result.get("count"), int):
+            raise UpstreamError("Invalid scene page from Stash")
+        return result
+
     def performers(self, q: str = "", page: int = 1) -> dict:
         return self.gql(PERFORMERS, {"q": q, "page": page}).get("findPerformers", {"count": 0, "performers": []})
 
@@ -108,6 +122,40 @@ class StashClient:
             "performer_ids": {"ids": clean_perf_ids, "mode": "ADD"}
         }})
         return bool(result.get("bulkImageUpdate"))
+
+    def add_scene_performers(self, scene_ids: List[str], performer_ids: List[str]) -> bool:
+        if not scene_ids or not performer_ids:
+            return True
+        result = self.gql("""mutation AddScenePerformers($input:BulkSceneUpdateInput!) {
+            bulkSceneUpdate(input:$input) { id performers { id } } }""", {"input": {
+            "ids": [str(x) for x in set(scene_ids)],
+            "performer_ids": {"ids": [str(x) for x in set(performer_ids)], "mode": "ADD"},
+        }})
+        return bool(result.get("bulkSceneUpdate"))
+
+    def extract_video_frames(self, path: str, duration: float, count: int = 6) -> List[tuple[float, Image.Image]]:
+        real_path = Path(os.path.realpath(path))
+        roots = [Path(root).resolve() for root in self.settings.video_roots]
+        if not any(real_path == root or root in real_path.parents for root in roots):
+            raise UpstreamError("Video path is outside the configured video roots")
+        if not real_path.is_file():
+            raise UpstreamError("Video file is not available in the LXC")
+        ffmpeg = shutil.which("ffmpeg") or "/mnt/stash-normal/ffmpeg"
+        if not os.path.isfile(ffmpeg):
+            raise UpstreamError("ffmpeg is not installed for video frame extraction")
+        safe_duration = max(float(duration or 0), 1.0)
+        output = []
+        for index in range(count):
+            timestamp = safe_duration * (index + 1) / (count + 1)
+            command = [ffmpeg, "-hide_banner", "-loglevel", "error", "-ss", f"{timestamp:.3f}",
+                       "-i", str(real_path), "-frames:v", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"]
+            try:
+                result = subprocess.run(command, check=True, capture_output=True, timeout=90)
+                with Image.open(io.BytesIO(result.stdout)) as frame:
+                    output.append((timestamp, frame.convert("RGB")))
+            except (subprocess.SubprocessError, OSError, UnidentifiedImageError) as exc:
+                raise UpstreamError(f"Video frame extraction failed: {type(exc).__name__}", True) from None
+        return output
 
     def create_performer(self, name: str, image_data_uri: str = "") -> dict:
         input_data = {"name": name.strip()}

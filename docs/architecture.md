@@ -23,6 +23,9 @@ Plugin dispatcher ── authenticated HTTP ──> FastAPI job queue
                                       ├─ five-point alignment
                                       └─ ArcFace 512-D embedding
                                                │
+                                      OpenVINO GPU when available
+                                      (CPU fallback; automatic queue)
+                                               │
                                                ▼
                                       SQLite + private face crop
                                                │
@@ -48,7 +51,8 @@ assignments are additive: existing Stash Performer links are never removed.
 
 Each Stash instance has an independent data directory:
 
-- `review.sqlite3`: images, faces, embeddings, clusters, jobs and reference faces.
+- `review.sqlite3`: media inventory, images, faces, embeddings, clusters, jobs and reference faces.
+- `jobs.stage` and `jobs.detail`: live pipeline stage and current item for dashboard diagnostics.
 - `crops/`: private JPEG face crops, mode `0600`.
 - `worker.lock`: exclusive single-worker lock.
 
@@ -67,8 +71,17 @@ The worker supports:
 - `sync_performers`: import usable Performer portraits as references.
 - `forget`: remove local state for a deleted Stash image.
 
-The worker runs with one Uvicorn process per data directory. This prevents two
-workers from claiming the same SQLite job queue.
+The worker runs with one Uvicorn process per data directory, but can claim jobs
+with multiple processing threads (`FACE_WORKERS`). One shared InsightFace model
+is used, so CPU work is concurrent without loading one model copy per thread.
+When OpenVINO exposes an Intel GPU, the execution provider is selected and its
+runtime queues concurrent inference requests; otherwise the health endpoint
+reports the CPU fallback. SQLite WAL mode and short transactions protect the
+persistent queue.
+
+The Media Index dashboard refreshes every three seconds. It shows media totals,
+queued/running/failed counts, an animated pipeline tree, current stage/detail,
+attempts, timestamps, payload, result and errors when a job is selected.
 
 ## Security boundaries
 

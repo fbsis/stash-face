@@ -24,8 +24,9 @@ class Worker:
         self.detector = detector
         self.clusterer = Clusterer(eps=settings.cluster_eps, min_samples=settings.min_faces)
         self.stopping = threading.Event()
-        self.thread: threading.Thread | None = None
+        self.threads: list[threading.Thread] = []
         self.lock = None
+        self.local = threading.local()
 
     def start(self):
         self.lock = (self.store.directory / "worker.lock").open("a")
@@ -35,14 +36,22 @@ class Worker:
             self.lock.close()
             raise RuntimeError("Another worker owns this database; use uvicorn --workers 1") from None
 
-        self.thread = threading.Thread(target=self.run, name="face-worker", daemon=True)
-        self.thread.start()
-        log.info("Face background worker started.")
+        worker_count = int(getattr(self.settings, "workers", 1))
+        self.threads = [threading.Thread(target=self.run, name=f"face-worker-{index + 1}", daemon=True)
+                        for index in range(worker_count)]
+        for thread in self.threads:
+            thread.start()
+        log.info("Face background worker started with %d processing threads.", worker_count)
 
     def stop(self):
         self.stopping.set()
-        if self.thread:
-            self.thread.join(timeout=self.settings.timeout * 2 + 5)
+        for thread in self.threads:
+            thread.join(timeout=self.settings.timeout * 2 + 5)
+        self.stash.close()
+        if self.lock:
+            fcntl.flock(self.lock, fcntl.LOCK_UN)
+            self.lock.close()
+            self.lock = None
 
     def check_stop(self):
         if self.stopping.is_set():
@@ -56,6 +65,8 @@ class Worker:
                     self.stopping.wait(0.2)
                     continue
                 try:
+                    self.local.job_id = job["id"]
+                    self.store.set_job_progress(job["id"], self.stage_for(job), self.detail_for(job))
                     result = self.execute(job)
                     self.store.finish(job["id"], result)
                 except InterruptedError:
@@ -71,10 +82,30 @@ class Worker:
                 except Exception as exc:
                     log.exception("Job %s failed with unexpected exception", job["id"])
                     self.store.fail(job["id"], str(exc))
+                finally:
+                    self.local.job_id = None
         finally:
-            self.stash.close()
-            if self.lock:
-                self.lock.close()
+            # The shared Stash client and process lock are closed by stop(), after all threads exit.
+            pass
+
+    def progress(self, stage: str, detail: str = ""):
+        job_id = getattr(self.local, "job_id", None)
+        if job_id:
+            self.store.set_job_progress(job_id, stage, detail)
+
+    def stage_for(self, job: dict) -> str:
+        return {
+            "scan": "enumerating media",
+            "image": "detecting and embedding faces",
+            "video": "extracting and embedding six frames",
+            "cluster": "clustering embeddings",
+            "sync_performers": "syncing Performer references",
+            "forget": "removing deleted media",
+        }.get(job["kind"], "processing")
+
+    def detail_for(self, job: dict) -> str:
+        payload = job.get("payload", {})
+        return str(payload.get("title") or payload.get("image_id") or payload.get("path") or job["kind"])
 
     def execute(self, job: dict) -> dict:
         kind = job["kind"]
@@ -84,6 +115,8 @@ class Worker:
             return self.scan(payload)
         elif kind == "image":
             return self.process_image(payload["image_id"], payload.get("force", False))
+        elif kind == "video":
+            return self.process_video(payload)
         elif kind == "cluster":
             return self.run_clustering()
         elif kind == "forget":
@@ -111,11 +144,13 @@ class Worker:
                 img_id = str(image["id"])
                 seen.add(img_id)
 
-                if not force and self.store.unchanged(img_id, content_key(image), self.detector.signature):
+                image_key = content_key(image)
+                self.store.register_media(img_id, "image", img_id, image.get("title", ""), image_key)
+                if not force and self.store.unchanged(img_id, image_key, self.detector.signature):
                     skipped += 1
                     continue
 
-                key = f"image:{img_id}:{content_key(image)}:{self.detector.signature}:{force}"
+                key = f"image:{img_id}:{image_key}:{self.detector.signature}:{force}"
                 _, created = self.store.enqueue("image", {"image_id": img_id, "force": force}, key)
                 enqueued += int(created)
 
@@ -124,11 +159,44 @@ class Worker:
                 break
             page += 1
 
-        # Automatically enqueue clustering once scanning is queued
+        # Scenes are indexed separately. Each video gets exactly six evenly-spaced frame records.
+        scene_page, scene_received, video_count = 1, 0, 0
+        while True:
+            self.check_stop()
+            result = self.stash.scene_page(scene_page)
+            scenes = result.get("scenes", [])
+            scene_total = result.get("count", 0)
+            if not scenes and scene_received < scene_total:
+                break
+            for scene in scenes:
+                for video in [f for f in scene.get("files", []) if f.get("__typename") == "VideoFile"]:
+                    scene_id, file_id = str(scene["id"]), str(video["id"])
+                    video_key = f"{video.get('mod_time')}:{video.get('size')}:{video.get('duration')}"
+                    if not force and self.store.media_source_unchanged("video", scene_id, file_id, video_key):
+                        skipped += self.settings.video_frame_count
+                        continue
+                    for frame_index in range(self.settings.video_frame_count):
+                        frame_key = f"video:{scene_id}:{file_id}:frame:{frame_index}"
+                        self.store.register_media(frame_key, "video", scene_id, scene.get("title", ""),
+                                                  video_key, file_id, frame_index,
+                                                  float(video.get("duration") or 0) * (frame_index + 1) / 7)
+                    key = f"video:{scene_id}:{file_id}:{video_key}:{force}"
+                    _, created = self.store.enqueue("video", {
+                        "scene_id": scene_id, "file_id": file_id, "path": video["path"],
+                        "duration": float(video.get("duration") or 0), "title": scene.get("title", ""),
+                        "content_key": video_key, "force": force,
+                    }, key)
+                    enqueued += int(created)
+                    video_count += 1
+            scene_received += len(scenes)
+            if scene_received >= scene_total or not scenes:
+                break
+            scene_page += 1
+
         if enqueued > 0:
             self.store.enqueue("cluster", {}, "cluster:after-scan")
 
-        return {"enqueued": enqueued, "unchanged": skipped, "total_seen": len(seen)}
+        return {"enqueued": enqueued, "unchanged": skipped, "images_seen": len(seen), "videos_seen": video_count}
 
     def process_image(self, image_id: str, force: bool = False) -> dict:
         image = self.stash.image(image_id)
@@ -144,9 +212,11 @@ class Worker:
         if not force and self.store.unchanged(image_id, ckey, self.detector.signature):
             return {"unchanged": True}
 
+        self.progress("downloading photo", image.get("title") or image_id)
         picture = self.stash.download(image)
         self.check_stop()
 
+        self.progress("detecting and embedding faces", image.get("title") or image_id)
         detections = self.detector.detect(picture)
         saved_detections = []
         paths = []
@@ -181,7 +251,8 @@ class Worker:
                     "age": det.age,
                 })
 
-            self.store.save_detection(image_id, ckey, self.detector.signature, image.get("title", ""), saved_detections)
+            self.store.save_detection(image_id, ckey, self.detector.signature, image.get("title", ""),
+                                      saved_detections, media_type="image", source_id=image_id)
 
             # Auto-match against known performers if available
             if self.settings.auto_tag_stash:
@@ -193,6 +264,42 @@ class Worker:
             raise
 
         return {"image_id": image_id, "faces_found": len(saved_detections)}
+
+    def process_video(self, payload: dict) -> dict:
+        scene_id = str(payload["scene_id"])
+        file_id = str(payload["file_id"])
+        frames = self.stash.extract_video_frames(payload["path"], payload.get("duration", 0), self.settings.video_frame_count)
+        faces_found = 0
+        for frame_index, (frame_time, picture) in enumerate(frames):
+            self.check_stop()
+            self.progress("detecting video frame", f"frame {frame_index + 1}/6 at {frame_time:.2f}s")
+            media_key = f"video:{scene_id}:{file_id}:frame:{frame_index}"
+            detections = self.detector.detect(picture)
+            saved = self._save_detections(picture, detections)
+            self.store.save_detection(media_key, payload["content_key"], self.detector.signature,
+                                      payload.get("title", ""), saved, media_type="video",
+                                      source_id=scene_id, file_id=file_id,
+                                      frame_index=frame_index, frame_time=frame_time)
+            faces_found += len(saved)
+            if self.settings.auto_tag_stash:
+                self.auto_match_scene_faces(scene_id, saved)
+        return {"scene_id": scene_id, "file_id": file_id, "frames": len(frames), "faces_found": faces_found}
+
+    def _save_detections(self, picture: Image.Image, detections: list) -> List[dict]:
+        saved, width, height = [], *picture.size
+        for det in detections:
+            box = det.box
+            margin = int(max(box[2] - box[0], box[3] - box[1]) * 0.15)
+            crop = picture.crop((max(0, box[0] - margin), max(0, box[1] - margin),
+                                 min(width, box[2] + margin), min(height, box[3] + margin)))
+            crop.thumbnail((256, 256), Image.Resampling.LANCZOS)
+            filename = uuid.uuid4().hex + ".jpg"
+            crop_path = self.store.crops / filename
+            crop.save(crop_path, format="JPEG", quality=90)
+            crop_path.chmod(0o600)
+            saved.append({"box": box, "score": det.score, "crop": filename,
+                          "embedding": det.embedding, "gender": det.gender, "age": det.age})
+        return saved
 
     def auto_match_image_faces(self, image_id: str, detections: List[dict]):
         known = self.store.get_known_performers()
@@ -225,7 +332,29 @@ class Worker:
             except Exception as e:
                 log.warning("Failed to auto-tag image %s in Stash: %s", image_id, e)
 
+    def auto_match_scene_faces(self, scene_id: str, detections: List[dict]):
+        known = self.store.get_known_performers()
+        if not known:
+            return
+        known_embs = np.stack([k["embedding"] for k in known])
+        matched = set()
+        for det in detections:
+            emb = det.get("embedding")
+            if emb is None:
+                continue
+            sims = np.dot(known_embs, emb)
+            idx = int(np.argmax(sims))
+            if 1.0 - float(sims[idx]) <= self.settings.performer_threshold:
+                matched.add(known[idx]["performer_id"])
+        if matched:
+            try:
+                self.stash.add_scene_performers([scene_id], list(matched))
+            except Exception as exc:
+                log.warning("Failed to auto-tag scene %s in Stash: %s", scene_id, exc)
+
     def run_clustering(self) -> dict:
+        if self.store.has_pending_media_jobs():
+            raise UpstreamError("Waiting for photo/video jobs before clustering", retryable=True)
         log.info("Running DBSCAN face clustering...")
         removed = self.store.reset_unlinked_clusters()
         faces = self.store.get_all_faces_with_embeddings(unclustered_only=True)

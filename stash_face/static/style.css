@@ -223,9 +223,13 @@ body {
   font-size: 0.9rem;
 }
 
-.filter-pills {
+.filter-pills, .view-pills {
   display: flex;
   gap: 0.4rem;
+}
+
+.view-pills {
+  margin-right: auto;
 }
 
 .pill {
@@ -316,6 +320,127 @@ body {
   padding: 0.15rem 0.4rem;
   border-radius: 9999px;
   font-weight: bold;
+}
+
+.media-panel {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.25rem;
+}
+
+.media-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+}
+
+.media-toolbar h2 {
+  margin-right: auto;
+  font-size: 1.1rem;
+}
+
+.media-toolbar select {
+  padding: 0.4rem 0.6rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text-main);
+}
+
+.media-progress {
+  color: var(--text-muted);
+  margin-bottom: 1rem;
+}
+
+.processing-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.45fr);
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.job-tree-wrap, .job-detail {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+}
+
+.job-tree-header, .job-detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.7rem 0.8rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.job-tree-header strong, .job-detail-header strong { color: var(--text-main); }
+.job-tree { max-height: 390px; overflow: auto; padding: 0.45rem; }
+.pipeline-group { margin: 0.25rem 0 0.75rem; }
+.pipeline-title {
+  display: flex; justify-content: space-between; padding: 0.35rem 0.5rem;
+  color: var(--text-main); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em;
+}
+.pipeline-node {
+  position: relative; display: grid; grid-template-columns: 10px 1fr auto; gap: 0.6rem;
+  align-items: center; width: 100%; padding: 0.5rem 0.55rem;
+  border: 0; border-left: 1px solid var(--border); background: transparent;
+  color: var(--text-muted); text-align: left; cursor: pointer;
+}
+.pipeline-node:hover, .pipeline-node.selected { background: var(--bg-card-hover); color: var(--text-main); }
+.pipeline-node.active .node-dot { animation: processing-pulse 1.2s ease-in-out infinite; }
+.node-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); }
+.pipeline-node.running .node-dot { background: var(--primary); }
+.pipeline-node.queued .node-dot, .pipeline-node.retry .node-dot { background: var(--warning, #f59e0b); }
+.pipeline-node.done .node-dot { background: var(--success, #22c55e); }
+.pipeline-node.failed .node-dot { background: var(--danger, #ef4444); }
+.node-main { min-width: 0; }
+.node-label, .node-subtitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.node-label { color: inherit; font-size: 0.82rem; }
+.node-subtitle { margin-top: 0.15rem; font-size: 0.7rem; color: var(--text-muted); }
+.node-state { font-size: 0.7rem; text-transform: uppercase; }
+.job-detail { padding-bottom: 0.5rem; }
+.job-detail pre {
+  max-height: 340px; overflow: auto; margin: 0; padding: 0.8rem;
+  color: var(--text-muted); white-space: pre-wrap; word-break: break-word;
+  font: 0.72rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.icon-btn { border: 0; background: transparent; color: var(--text-muted); font-size: 1.2rem; cursor: pointer; }
+@keyframes processing-pulse {
+  0%, 100% { opacity: 0.65; transform: scale(0.9); }
+  50% { opacity: 1; transform: scale(1.35); }
+}
+.media-list { display: grid; gap: 0.5rem; }
+
+@media (max-width: 768px) {
+  .processing-layout { grid-template-columns: 1fr; }
+}
+
+.media-row {
+  display: grid;
+  grid-template-columns: 90px 80px 1fr 100px 80px;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.6rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.8rem;
+}
+
+.media-kind, .media-state {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.media-title, .media-source {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
 }
 
 /* Empty State */

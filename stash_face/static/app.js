@@ -6,6 +6,8 @@ let currentFilter = "all";
 let currentSearch = "";
 let selectedPerson = null;
 let allPeople = [];
+let progressTimer = null;
+let selectedJobId = null;
 const cropUrls = new Set();
 
 async function setCropImage(img, filename) {
@@ -69,6 +71,10 @@ async function connect(provided) {
     notify(`Connected to Stash Face (${health.detector.model_name})`);
 
     await loadPeople();
+    await loadProgress();
+    await loadJobs();
+    clearInterval(progressTimer);
+    progressTimer = setInterval(() => { loadProgress(); loadJobs(); if (!$("media-panel").hidden) loadMedia(); }, 3000);
   } catch (err) {
     localStorage.removeItem("stash_face_token");
     notify("Connection failed: " + err.message);
@@ -83,6 +89,8 @@ function disconnect() {
   $("action-controls").hidden = true;
   $("stats-bar").hidden = true;
   $("workspace").hidden = true;
+  clearInterval(progressTimer);
+  progressTimer = null;
   $("people-grid").replaceChildren();
   notify("Disconnected. Token forgotten.");
 }
@@ -92,6 +100,123 @@ function updateStats(stats) {
   $("stat-people").textContent = stats.clusters || 0;
   $("stat-faces").textContent = stats.faces || 0;
   $("stat-images").textContent = stats.images || 0;
+  $("stat-progress").textContent = `${stats.media_percent || 0}%`;
+}
+
+async function loadProgress() {
+  try {
+    const progress = await api("/progress");
+    $("stat-progress").textContent = `${progress.percent || 0}%`;
+    const queued = Object.entries(progress.jobs || {}).filter(([key]) => key.endsWith("_queued") || key.endsWith("_retry"))
+      .reduce((sum, [, count]) => sum + count, 0);
+    const running = Object.entries(progress.jobs || {}).filter(([key]) => key.endsWith("_running"))
+      .reduce((sum, [, count]) => sum + count, 0);
+    $("media-progress").textContent = `${progress.media_completed || 0} / ${progress.media_total || 0} media indexed (${progress.percent || 0}%). ` +
+      `${queued} queued, ${running} running, ${progress.statuses?.unindexed || 0} unindexed, ${progress.statuses?.failed || 0} failed.`;
+  } catch (err) {
+    notify("Error loading progress: " + err.message);
+  }
+}
+
+function jobLabel(job) {
+  const payload = job.payload || {};
+  if (job.kind === "image") return `Photo ${payload.image_id || "unknown"}`;
+  if (job.kind === "video") return `Video ${payload.scene_id || "unknown"}`;
+  if (job.kind === "scan") return "Library scan";
+  if (job.kind === "cluster") return "DBSCAN clustering";
+  if (job.kind === "sync_performers") return "Performer reference sync";
+  return `${job.kind} job`;
+}
+
+function jobSteps(kind) {
+  return {
+    scan: ["enumerate media", "queue files"],
+    image: ["download photo", "detect and embed faces", "save crop and embedding", "tag Performer"],
+    video: ["extract six frames", "detect and embed faces", "save frame results", "tag scene"],
+    cluster: ["load embeddings", "DBSCAN", "preserve links"],
+    sync_performers: ["download references", "detect face", "save reference"],
+  }[kind] || ["process"];
+}
+
+function showJobDetails(job) {
+  selectedJobId = job.id;
+  $("job-detail").hidden = false;
+  $("job-detail-content").textContent = JSON.stringify({
+    id: job.id, kind: job.kind, state: job.state, stage: job.stage,
+    detail: job.detail, attempts: job.attempts,
+    created_at: new Date(job.created_at * 1000).toISOString(),
+    updated_at: new Date(job.updated_at * 1000).toISOString(),
+    payload: job.payload, result: job.result, error: job.error,
+  }, null, 2);
+}
+
+async function loadJobs() {
+  try {
+    const jobs = await api("/jobs?limit=200");
+    const tree = $("job-tree");
+    const selected = selectedJobId;
+    tree.replaceChildren();
+    if (!jobs.length) { tree.textContent = "No jobs have been queued."; return; }
+    const groups = new Map();
+    for (const job of jobs) {
+      if (!groups.has(job.kind)) groups.set(job.kind, []);
+      groups.get(job.kind).push(job);
+    }
+    for (const [kind, items] of groups) {
+      const group = document.createElement("section"); group.className = "pipeline-group";
+      const title = document.createElement("div"); title.className = "pipeline-title";
+      const active = items.filter(item => ["queued", "running", "retry"].includes(item.state)).length;
+      title.textContent = `${kind} pipeline`;
+      const count = document.createElement("span"); count.textContent = `${active} active / ${items.length} shown`;
+      title.append(count); group.append(title);
+      for (const job of items) {
+        const node = document.createElement("button");
+        node.type = "button"; node.className = `pipeline-node ${job.state} ${job.state === "running" ? "active" : ""}`;
+        if (job.id === selected) node.classList.add("selected");
+        const dot = document.createElement("span"); dot.className = "node-dot";
+        const main = document.createElement("span"); main.className = "node-main";
+        const label = document.createElement("span"); label.className = "node-label"; label.textContent = jobLabel(job);
+        const sub = document.createElement("span"); sub.className = "node-subtitle"; sub.textContent = `${job.stage || job.state}${job.detail ? ` · ${job.detail}` : ""}`;
+        main.append(label, sub);
+        const state = document.createElement("span"); state.className = "node-state"; state.textContent = job.state;
+        node.append(dot, main, state); node.onclick = () => showJobDetails(job); group.append(node);
+      }
+      tree.append(group);
+    }
+    $("job-refresh-state").textContent = `Live · ${jobs.length} jobs`;
+    if (selected) {
+      const current = jobs.find(job => job.id === selected);
+      if (current) showJobDetails(current);
+    }
+  } catch (err) {
+    $("job-refresh-state").textContent = "Unavailable";
+  }
+}
+
+async function loadMedia() {
+  try {
+    const status = $("media-status-filter").value;
+    const mediaType = $("media-type-filter").value;
+    const result = await api(`/media?status=${encodeURIComponent(status)}&media_type=${encodeURIComponent(mediaType)}&limit=100`);
+    const list = $("media-list");
+    list.replaceChildren();
+    if (!result.items.length) {
+      list.textContent = "No media matches this filter.";
+      return;
+    }
+    for (const item of result.items) {
+      const row = document.createElement("div");
+      row.className = "media-row";
+      const kind = document.createElement("span"); kind.className = "media-kind"; kind.textContent = item.media_type;
+      const state = document.createElement("span"); state.className = "media-state"; state.textContent = item.status;
+      const title = document.createElement("span"); title.className = "media-title"; title.textContent = item.title || item.source_id;
+      const source = document.createElement("span"); source.className = "media-source"; source.textContent = item.source_id;
+      const frame = document.createElement("span"); frame.textContent = item.media_type === "video" ? `frame ${Number(item.frame_index || 0) + 1}/6` : "photo";
+      row.append(kind, state, title, source, frame); list.append(row);
+    }
+  } catch (err) {
+    notify("Error loading media index: " + err.message);
+  }
 }
 
 async function loadPeople() {
@@ -251,6 +376,20 @@ $("btn-sync-performers").onclick = async () => {
     notify("Failed to sync performers: " + err.message);
   }
 };
+
+// People / Media views
+$("view-people").onclick = () => {
+  $("view-people").classList.add("active"); $("view-media").classList.remove("active");
+  $("people-section").hidden = false; $("media-panel").hidden = true;
+};
+$("view-media").onclick = () => {
+  $("view-media").classList.add("active"); $("view-people").classList.remove("active");
+  $("people-section").hidden = true; $("media-panel").hidden = false;
+  loadMedia(); loadProgress();
+};
+$("media-status-filter").onchange = loadMedia;
+$("media-type-filter").onchange = loadMedia;
+$("close-job-detail").onclick = () => { $("job-detail").hidden = true; selectedJobId = null; };
 
 // Filter Pills
 document.querySelectorAll(".filter-pills .pill").forEach(pill => {

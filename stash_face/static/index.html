@@ -22,6 +22,7 @@
         <div class="stat-item"><strong id="stat-people">0</strong> people</div>
         <div class="stat-item"><strong id="stat-faces">0</strong> faces</div>
         <div class="stat-item"><strong id="stat-images">0</strong> photos</div>
+        <div class="stat-item"><strong id="stat-progress">0%</strong> indexed</div>
       </div>
     </div>
 
@@ -57,6 +58,10 @@
   <main id="workspace" class="workspace" hidden>
     <!-- Search and Filter Toolbar -->
     <section class="toolbar">
+      <div class="view-pills">
+        <button id="view-people" class="pill active">People</button>
+        <button id="view-media" class="pill">Media Index</button>
+      </div>
       <div class="search-box">
         <span class="search-icon">🔍</span>
         <input id="search-input" type="text" placeholder="Search people by name or ID..." maxlength="100">
@@ -70,13 +75,51 @@
     </section>
 
     <!-- People Grid (Immich-Style) -->
-    <section class="people-section">
+    <section id="people-section" class="people-section">
       <div id="people-grid" class="people-grid"></div>
       <div id="empty-state" class="empty-state" hidden>
         <span class="empty-icon">👥</span>
         <h3>No people found</h3>
         <p>Click <strong>Scan Library</strong> to start detecting and recognizing faces in your Stash collection.</p>
       </div>
+    </section>
+
+    <section id="media-panel" class="media-panel" hidden>
+      <div class="media-toolbar">
+        <h2>Media Index</h2>
+        <select id="media-status-filter">
+          <option value="all">All media</option>
+          <option value="unindexed">Unindexed</option>
+          <option value="indexed">Indexed</option>
+          <option value="clustered">Clustered</option>
+          <option value="approved">Approved / linked</option>
+          <option value="no_faces">No faces</option>
+          <option value="failed">Failed</option>
+        </select>
+        <select id="media-type-filter">
+          <option value="all">Photos and videos</option>
+          <option value="image">Photos</option>
+          <option value="video">Videos</option>
+        </select>
+      </div>
+      <p id="media-progress" class="media-progress">Loading index status...</p>
+      <div class="processing-layout">
+        <div class="job-tree-wrap">
+          <div class="job-tree-header">
+            <strong>Processing pipeline</strong>
+            <span id="job-refresh-state">Live</span>
+          </div>
+          <div id="job-tree" class="job-tree" aria-live="polite"></div>
+        </div>
+        <aside id="job-detail" class="job-detail" hidden>
+          <div class="job-detail-header">
+            <strong>Job details</strong>
+            <button id="close-job-detail" class="icon-btn" aria-label="Close details">×</button>
+          </div>
+          <pre id="job-detail-content"></pre>
+        </aside>
+      </div>
+      <div id="media-list" class="media-list"></div>
     </section>
   </main>
 

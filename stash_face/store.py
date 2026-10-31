@@ -66,6 +66,24 @@ class Store:
             CREATE INDEX IF NOT EXISTS idx_faces_cluster ON faces(cluster_id);
             CREATE INDEX IF NOT EXISTS idx_faces_performer ON faces(performer_id);
 
+            CREATE TABLE IF NOT EXISTS media (
+              media_key TEXT PRIMARY KEY,
+              media_type TEXT NOT NULL,
+              source_id TEXT NOT NULL,
+              file_id TEXT,
+              title TEXT NOT NULL DEFAULT '',
+              content_key TEXT NOT NULL DEFAULT '',
+              detector_key TEXT NOT NULL DEFAULT '',
+              status TEXT NOT NULL DEFAULT 'unindexed',
+              frame_index INTEGER,
+              frame_time REAL,
+              face_count INTEGER NOT NULL DEFAULT 0,
+              last_error TEXT,
+              indexed_at REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_media_status ON media(status, media_type);
+            CREATE INDEX IF NOT EXISTS idx_media_source ON media(media_type, source_id, file_id);
+
             CREATE TABLE IF NOT EXISTS known_performers (
               performer_id TEXT PRIMARY KEY,
               name TEXT NOT NULL,
@@ -86,13 +104,28 @@ class Store:
               created_at REAL NOT NULL,
               updated_at REAL NOT NULL,
               result TEXT,
-              error TEXT
+              error TEXT,
+              stage TEXT NOT NULL DEFAULT 'queued',
+              detail TEXT
             );
             CREATE UNIQUE INDEX IF NOT EXISTS active_job_key ON jobs(dedupe_key)
               WHERE state IN ('queued', 'running', 'retry');
             """)
 
+            # Backfill the media inventory for photos indexed before the inventory was added.
+            con.execute("""INSERT OR IGNORE INTO media
+                (media_key, media_type, source_id, title, content_key, detector_key, status, face_count, indexed_at)
+                SELECT id, 'image', id, title, content_key, detector_key,
+                       'indexed', (SELECT count(*) FROM faces f WHERE f.image_id=images.id AND f.active=1), processed_at
+                FROM images""")
+
             # Ensure any missing columns exist
+            job_cols = {row[1] for row in con.execute("PRAGMA table_info(jobs)")}
+            if "stage" not in job_cols:
+                con.execute("ALTER TABLE jobs ADD COLUMN stage TEXT NOT NULL DEFAULT 'queued'")
+            if "detail" not in job_cols:
+                con.execute("ALTER TABLE jobs ADD COLUMN detail TEXT")
+
             cols = {row[1] for row in con.execute("PRAGMA table_info(faces)")}
             if "embedding" not in cols:
                 con.execute("ALTER TABLE faces ADD COLUMN embedding BLOB")
@@ -129,6 +162,77 @@ class Store:
             row = con.execute("SELECT * FROM images WHERE id=?", (str(image_id),)).fetchone()
         return bool(row and row["content_key"] == key and row["detector_key"] == detector_key)
 
+    def register_media(
+        self,
+        media_key: str,
+        media_type: str,
+        source_id: str,
+        title: str = "",
+        content_key: str = "",
+        file_id: Optional[str] = None,
+        frame_index: Optional[int] = None,
+        frame_time: Optional[float] = None,
+    ) -> bool:
+        with self.connection() as con:
+            row = con.execute("SELECT content_key, status FROM media WHERE media_key=?", (media_key,)).fetchone()
+            if row and row["content_key"] == content_key and row["status"] not in ("failed", "unindexed"):
+                return False
+            con.execute(
+                """INSERT INTO media
+                   (media_key, media_type, source_id, file_id, title, content_key, status, frame_index, frame_time)
+                   VALUES (?, ?, ?, ?, ?, ?, 'unindexed', ?, ?)
+                   ON CONFLICT(media_key) DO UPDATE SET
+                     media_type=excluded.media_type, source_id=excluded.source_id,
+                     file_id=excluded.file_id, title=excluded.title,
+                     content_key=excluded.content_key, status='unindexed',
+                     frame_index=excluded.frame_index, frame_time=excluded.frame_time,
+                     last_error=NULL""",
+                (media_key, media_type, str(source_id), file_id, title or "", content_key,
+                 frame_index, frame_time),
+            )
+            return True
+
+    def media_source_unchanged(self, media_type: str, source_id: str, file_id: Optional[str], content_key: str) -> bool:
+        with self.connection() as con:
+            row = con.execute(
+                """SELECT count(*) AS total, sum(status IN ('indexed','clustered','approved','no_faces','ignored')) AS ready
+                   FROM media WHERE media_type=? AND source_id=? AND coalesce(file_id, '')=coalesce(?, '')
+                   AND content_key=?""",
+                (media_type, str(source_id), file_id, content_key),
+            ).fetchone()
+            return bool(row and row["total"] and row["total"] == row["ready"])
+
+    def media_page(self, status: str = "all", media_type: str = "all", limit: int = 100, offset: int = 0) -> Dict[str, Any]:
+        where, params = [], []
+        if status != "all":
+            where.append("status=?")
+            params.append(status)
+        if media_type != "all":
+            where.append("media_type=?")
+            params.append(media_type)
+        clause = (" WHERE " + " AND ".join(where)) if where else ""
+        with self.connection() as con:
+            total = con.execute("SELECT count(*) FROM media" + clause, params).fetchone()[0]
+            rows = con.execute(
+                "SELECT * FROM media" + clause + " ORDER BY media_type, source_id, frame_index LIMIT ? OFFSET ?",
+                params + [min(max(limit, 1), 500), max(offset, 0)],
+            ).fetchall()
+            return {"total": total, "items": [dict(row) for row in rows]}
+
+    def progress(self) -> Dict[str, Any]:
+        with self.connection() as con:
+            counts = {row["status"]: row["count"] for row in con.execute("SELECT status, count(*) AS count FROM media GROUP BY status")}
+            job_counts = {f"{row['kind']}_{row['state']}": row["count"] for row in con.execute("SELECT kind, state, count(*) AS count FROM jobs GROUP BY kind, state")}
+            total = sum(counts.values())
+            completed = sum(counts.get(state, 0) for state in ("indexed", "clustered", "approved", "no_faces", "ignored"))
+            return {
+                "media_total": total,
+                "media_completed": completed,
+                "percent": round(completed * 100 / total, 2) if total else 0,
+                "statuses": counts,
+                "jobs": job_counts,
+            }
+
     def save_detection(
         self,
         image_id: str,
@@ -136,6 +240,11 @@ class Store:
         detector_key: str,
         title: str,
         detections: List[Dict[str, Any]],
+        media_type: str = "image",
+        source_id: Optional[str] = None,
+        file_id: Optional[str] = None,
+        frame_index: Optional[int] = None,
+        frame_time: Optional[float] = None,
     ) -> List[int]:
         now = time.time()
         inserted_ids = []
@@ -149,8 +258,25 @@ class Store:
                    revision=excluded.revision, title=excluded.title, processed_at=excluded.processed_at""",
                 (str(image_id), content_key, detector_key, revision, title or "", now),
             )
-            # Deactivate previous faces for this image
+            # Deactivate previous faces for this media item and update the inventory.
             con.execute("UPDATE faces SET active=0 WHERE image_id=?", (str(image_id),))
+            media_status = "indexed" if detections else "no_faces"
+            con.execute(
+                """INSERT INTO media
+                   (media_key, media_type, source_id, file_id, title, content_key, detector_key,
+                    status, frame_index, frame_time, face_count, last_error, indexed_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+                   ON CONFLICT(media_key) DO UPDATE SET
+                     media_type=excluded.media_type, source_id=excluded.source_id,
+                     file_id=excluded.file_id, title=excluded.title,
+                     content_key=excluded.content_key, detector_key=excluded.detector_key,
+                     status=excluded.status, frame_index=excluded.frame_index,
+                     frame_time=excluded.frame_time, face_count=excluded.face_count,
+                     last_error=NULL, indexed_at=excluded.indexed_at""",
+                (str(image_id), media_type, str(source_id or image_id), file_id, title or "",
+                 content_key, detector_key, media_status, frame_index, frame_time,
+                 len(detections), now),
+            )
 
             for d in detections:
                 emb = d.get("embedding")
@@ -241,8 +367,11 @@ class Store:
                 if db_id is not None:
                     con.execute("UPDATE faces SET cluster_id=? WHERE id=?", (db_id, fid))
                 elif label == -1:
-                    # Noise/unassigned
                     con.execute("UPDATE faces SET cluster_id=NULL WHERE id=?", (fid,))
+
+            con.execute("""UPDATE media SET status='clustered'
+                WHERE media_key IN (SELECT DISTINCT image_id FROM faces WHERE cluster_id IS NOT NULL AND active=1)
+                AND status='indexed'""")
 
         return created_count
 
@@ -280,8 +409,10 @@ class Store:
                 return None
             cluster = dict(row)
             faces_rows = con.execute(
-                """SELECT id, image_id, crop, score, gender, age
-                   FROM faces WHERE cluster_id=? AND active=1 ORDER BY id DESC""",
+                """SELECT f.id, f.image_id, f.crop, f.score, f.gender, f.age,
+                          m.media_type, m.source_id, m.frame_index, m.frame_time
+                   FROM faces f LEFT JOIN media m ON m.media_key=f.image_id
+                   WHERE f.cluster_id=? AND f.active=1 ORDER BY f.id DESC""",
                 (cluster_id,),
             ).fetchall()
             cluster["faces"] = [dict(f) for f in faces_rows]
@@ -307,6 +438,11 @@ class Store:
             con.execute(
                 "UPDATE faces SET performer_id=?, matched_by='cluster' WHERE cluster_id=? AND active=1",
                 (str(performer_id), cluster_id),
+            )
+            con.execute(
+                """UPDATE media SET status='approved' WHERE media_key IN
+                   (SELECT DISTINCT image_id FROM faces WHERE cluster_id=? AND active=1)""",
+                (cluster_id,),
             )
             rows = con.execute(
                 "SELECT DISTINCT image_id FROM faces WHERE cluster_id=? AND active=1",
@@ -397,17 +533,24 @@ class Store:
             if not row:
                 return None
             con.execute(
-                "UPDATE jobs SET state='running', attempts=attempts+1, updated_at=? WHERE id=?",
+                "UPDATE jobs SET state='running', stage='starting', detail=NULL, attempts=attempts+1, updated_at=? WHERE id=?",
                 (now, row["id"]),
             )
             d = dict(row)
             d["payload"] = json.loads(d["payload"])
             return d
 
+    def set_job_progress(self, job_id: str, stage: str, detail: Optional[str] = None):
+        with self.connection() as con:
+            con.execute(
+                "UPDATE jobs SET stage=?, detail=?, updated_at=? WHERE id=? AND state='running'",
+                (stage, detail, time.time(), job_id),
+            )
+
     def finish(self, job_id: str, result: Optional[dict]):
         with self.connection() as con:
             con.execute(
-                "UPDATE jobs SET state='done', result=?, updated_at=? WHERE id=?",
+                "UPDATE jobs SET state='done', stage='completed', detail=NULL, result=?, updated_at=? WHERE id=?",
                 (json.dumps(result) if result else None, time.time(), job_id),
             )
 
@@ -416,14 +559,24 @@ class Store:
         next_attempt = retry_at or 0.0
         with self.connection() as con:
             con.execute(
-                "UPDATE jobs SET state=?, error=?, next_attempt=?, updated_at=? WHERE id=?",
-                (state, error, next_attempt, time.time(), job_id),
+                "UPDATE jobs SET state=?, stage=?, detail=?, error=?, next_attempt=?, updated_at=? WHERE id=?",
+                (state, "retrying" if retry_at else "failed", error, error, next_attempt, time.time(), job_id),
             )
+
+    def has_pending_media_jobs(self) -> bool:
+        with self.connection() as con:
+            row = con.execute(
+                "SELECT 1 FROM jobs WHERE kind IN ('image','video') AND state IN ('queued','running','retry') LIMIT 1"
+            ).fetchone()
+            return row is not None
 
     def jobs(self, limit: int = 15) -> List[dict]:
         with self.connection() as con:
             rows = con.execute(
-                "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?",
+                """SELECT * FROM jobs
+                   ORDER BY CASE state WHEN 'running' THEN 0 WHEN 'retry' THEN 1
+                                      WHEN 'queued' THEN 2 WHEN 'failed' THEN 3 ELSE 4 END,
+                            updated_at DESC LIMIT ?""",
                 (limit,),
             ).fetchall()
             res = []
@@ -437,15 +590,20 @@ class Store:
 
     def stats(self) -> dict:
         with self.connection() as con:
-            images_count = con.execute("SELECT count(*) FROM images").fetchone()[0]
+            images_count = con.execute("SELECT count(*) FROM media WHERE media_type='image'").fetchone()[0]
             faces_count = con.execute("SELECT count(*) FROM faces WHERE active=1").fetchone()[0]
             clusters_count = con.execute("SELECT count(*) FROM clusters WHERE hidden=0").fetchone()[0]
             named_count = con.execute("SELECT count(*) FROM clusters WHERE performer_id IS NOT NULL AND hidden=0").fetchone()[0]
             jobs_queued = con.execute("SELECT count(*) FROM jobs WHERE state IN ('queued','running','retry')").fetchone()[0]
+            media_count = con.execute("SELECT count(*) FROM media").fetchone()[0]
+            media_done = con.execute("SELECT count(*) FROM media WHERE status IN ('indexed','clustered','approved','no_faces','ignored')").fetchone()[0]
             return {
                 "images": images_count,
                 "faces": faces_count,
                 "clusters": clusters_count,
                 "named_people": named_count,
                 "active_jobs": jobs_queued,
+                "media_total": media_count,
+                "media_completed": media_done,
+                "media_percent": round(media_done * 100 / media_count, 2) if media_count else 0,
             }

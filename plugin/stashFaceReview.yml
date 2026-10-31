@@ -1,5 +1,5 @@
 name: Stash Face Recognition
-description: Automatic face recognition, clustering and performer assignment (Immich-style).
+description: Automatic face recognition, six-frame video indexing, clustering and Performer assignment (Immich-style).
 version: 1.0.0
 url: https://github.com/fbsis/stash-face
 exec:
@@ -11,7 +11,7 @@ tasks:
   - name: Test Remote Connection
     defaultArgs:
       action: health
-  - name: Scan & Recognize Faces
+  - name: Index Photos & Videos (6 Frames per Video)
     defaultArgs:
       action: scan
   - name: Re-cluster Faces (DBSCAN)

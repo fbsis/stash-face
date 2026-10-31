@@ -332,6 +332,10 @@ body {
 }
 
 /* Modal */
+[hidden] {
+  display: none !important;
+}
+
 .modal {
   position: fixed;
   inset: 0;

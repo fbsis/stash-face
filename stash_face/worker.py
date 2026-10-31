@@ -189,6 +189,7 @@ class Worker:
                     key = f"video:{scene_id}:{file_id}:{video_key}:{force}"
                     _, created = self.store.enqueue("video", {
                         "scene_id": scene_id, "file_id": file_id, "path": video["path"],
+                        "preview": (scene.get("paths") or {}).get("preview"),
                         "duration": float(video.get("duration") or 0), "title": scene.get("title", ""),
                         "content_key": video_key, "force": force,
                     }, key)
@@ -275,7 +276,15 @@ class Worker:
     def process_video(self, payload: dict) -> dict:
         scene_id = str(payload["scene_id"])
         file_id = str(payload["file_id"])
-        frames = self.stash.extract_video_frames(payload["path"], payload.get("duration", 0), self.settings.video_frame_count)
+        preview = payload.get("preview")
+        if not preview:
+            try:
+                preview = self.stash.scene_preview(scene_id, file_id)
+            except UpstreamError as exc:
+                log.warning("Could not resolve Stash preview for scene %s: %s", scene_id, exc)
+        frames = self.stash.extract_video_frames(
+            payload["path"], payload.get("duration", 0), self.settings.video_frame_count, preview,
+        )
         faces_found = 0
         for frame_index, (frame_time, picture) in enumerate(frames):
             self.check_stop()

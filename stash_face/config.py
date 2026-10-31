@@ -33,6 +33,7 @@ class Settings:
     retry_seconds: float = 5
     max_image_bytes: int = 20_000_000
     max_image_pixels: int = 40_000_000
+    max_preview_bytes: int = 512_000_000
     video_roots: tuple[Path, ...] = (Path("/mnt"),)
     auto_tag_paths: tuple[str, ...] = ("/mnt",)
     video_frame_count: int = 6
@@ -82,6 +83,7 @@ class Settings:
             retry_seconds=float(os.getenv("FACE_RETRY_SECONDS", "5")),
             max_image_bytes=int(os.getenv("FACE_MAX_IMAGE_BYTES", "20000000")),
             max_image_pixels=int(os.getenv("FACE_MAX_IMAGE_PIXELS", "40000000")),
+            max_preview_bytes=int(os.getenv("FACE_MAX_PREVIEW_BYTES", "512000000")),
             video_roots=video_roots,
             auto_tag_paths=auto_tag_paths,
             video_frame_count=6,

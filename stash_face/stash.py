@@ -6,6 +6,7 @@ import logging
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin, urlsplit
@@ -19,6 +20,7 @@ IMAGE_FIELDS = """id title updated_at paths { image } performers { id name }
 visual_files { __typename ... on ImageFile { id mod_time size fingerprints { type value } } }"""
 IMAGES = "query ReviewImages($page:Int!) { findImages(filter:{page:$page,per_page:100,sort:\"id\",direction:ASC}) { count images { " + IMAGE_FIELDS + " } } }"
 IMAGE = "query ReviewImage($id:ID!) { findImage(id:$id) { " + IMAGE_FIELDS + " } }"
+SCENE = """query ReviewScene($id:ID!) { findScene(id:$id) { paths { preview } files { __typename id path } } }"""
 SCENES = """query ReviewScenes($page:Int!) { findScenes(filter:{page:$page,per_page:100,sort:\"id\",direction:ASC}) {
  count scenes { id title updated_at paths { screenshot preview } files { __typename ... on VideoFile {
  id path mod_time size duration width height } } } } }"""
@@ -106,6 +108,15 @@ class StashClient:
             raise UpstreamError("Invalid scene page from Stash")
         return result
 
+    def scene_preview(self, scene_id: str, file_id: str) -> Optional[str]:
+        scene = self.gql(SCENE, {"id": str(scene_id)}).get("findScene") or {}
+        paths = scene.get("paths") or {}
+        if not paths.get("preview"):
+            return None
+        if any(str(file.get("id")) == str(file_id) for file in scene.get("files", [])):
+            return str(paths["preview"])
+        return None
+
     def performers(self, q: str = "", page: int = 1) -> dict:
         return self.gql(PERFORMERS, {"q": q, "page": page}).get("findPerformers", {"count": 0, "performers": []})
 
@@ -142,29 +153,94 @@ class StashClient:
         }})
         return bool(result.get("bulkSceneUpdate"))
 
-    def extract_video_frames(self, path: str, duration: float, count: int = 6) -> List[tuple[float, Image.Image]]:
+    def _preview_target(self, preview_url: str) -> str:
+        target = urljoin(self.base + "/", preview_url)
+        target_parts = urlsplit(target)
+        base_parts = urlsplit(self.base)
+        base_path = base_parts.path.rstrip("/") + "/"
+        if (origin(target) != origin(self.base) or target_parts.username or target_parts.password
+                or not target_parts.path.startswith(base_path)):
+            raise UpstreamError("Video preview URL is outside the configured Stash origin/base path")
+        return target
+
+    def _stage_preview(self, preview_url: str) -> Path:
+        target = self._preview_target(preview_url)
+        fd, name = tempfile.mkstemp(prefix="stash-face-preview-", suffix=".mp4",
+                                    dir=str(self.settings.data_dir))
+        os.close(fd)
+        staged = Path(name)
+        total = 0
+        try:
+            with self.client.stream("GET", target) as response:
+                self.check(response)
+                with staged.open("wb") as output:
+                    for chunk in response.iter_bytes():
+                        total += len(chunk)
+                        if total > self.settings.max_preview_bytes:
+                            raise UpstreamError("Video preview exceeds the configured byte limit")
+                        output.write(chunk)
+            staged.chmod(0o600)
+            return staged
+        except (httpx.HTTPError, OSError) as exc:
+            staged.unlink(missing_ok=True)
+            raise UpstreamError(f"Video preview download failed: {type(exc).__name__}", True) from None
+        except Exception:
+            staged.unlink(missing_ok=True)
+            raise
+
+    def extract_video_frames(self, path: str, duration: float, count: int = 6,
+                             preview_url: Optional[str] = None) -> List[tuple[float, Image.Image]]:
         real_path = Path(os.path.realpath(path))
         roots = [Path(root).resolve() for root in self.settings.video_roots]
         if not any(real_path == root or root in real_path.parents for root in roots):
             raise UpstreamError("Video path is outside the configured video roots")
-        if not real_path.is_file():
-            raise UpstreamError("Video file is not available in the LXC")
         ffmpeg = shutil.which("ffmpeg") or "/mnt/stash-normal/ffmpeg"
         if not os.path.isfile(ffmpeg):
             raise UpstreamError("ffmpeg is not installed for video frame extraction")
-        safe_duration = max(float(duration or 0), 1.0)
-        output = []
-        for index in range(count):
-            timestamp = safe_duration * (index + 1) / (count + 1)
-            command = [ffmpeg, "-hide_banner", "-loglevel", "error", "-ss", f"{timestamp:.3f}",
-                       "-i", str(real_path), "-frames:v", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"]
+
+        input_path = real_path
+        staged_preview = None
+        if preview_url:
             try:
-                result = subprocess.run(command, check=True, capture_output=True, timeout=90)
-                with Image.open(io.BytesIO(result.stdout)) as frame:
-                    output.append((timestamp, frame.convert("RGB")))
-            except (subprocess.SubprocessError, OSError, UnidentifiedImageError) as exc:
-                raise UpstreamError(f"Video frame extraction failed: {type(exc).__name__}", True) from None
-        return output
+                staged_preview = self._stage_preview(preview_url)
+                input_path = staged_preview
+                log.info("Using existing Stash preview for video frame extraction")
+            except UpstreamError as exc:
+                log.warning("Existing Stash preview unavailable; falling back to original video: %s", exc)
+        if staged_preview is None and not real_path.is_file():
+            raise UpstreamError("Video file is not available in the LXC")
+
+        safe_duration = max(float(duration or 0), 1.0)
+        if staged_preview:
+            ffprobe = shutil.which("ffprobe")
+            if ffprobe:
+                try:
+                    probe = subprocess.run(
+                        [ffprobe, "-v", "error", "-show_entries", "format=duration",
+                         "-of", "default=noprint_wrappers=1:nokey=1", str(input_path)],
+                        check=True, capture_output=True, text=True, timeout=30,
+                    )
+                    preview_duration = float(probe.stdout.strip())
+                    if preview_duration > 0:
+                        safe_duration = min(safe_duration, preview_duration)
+                except (subprocess.SubprocessError, OSError, ValueError):
+                    log.warning("Could not determine staged Stash preview duration; using scene duration")
+        output = []
+        try:
+            for index in range(count):
+                timestamp = safe_duration * (index + 1) / (count + 1)
+                command = [ffmpeg, "-hide_banner", "-loglevel", "error", "-ss", f"{timestamp:.3f}",
+                           "-i", str(input_path), "-frames:v", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"]
+                try:
+                    result = subprocess.run(command, check=True, capture_output=True, timeout=90)
+                    with Image.open(io.BytesIO(result.stdout)) as frame:
+                        output.append((timestamp, frame.convert("RGB")))
+                except (subprocess.SubprocessError, OSError, UnidentifiedImageError) as exc:
+                    raise UpstreamError(f"Video frame extraction failed: {type(exc).__name__}", True) from None
+            return output
+        finally:
+            if staged_preview:
+                staged_preview.unlink(missing_ok=True)
 
     def create_performer(self, name: str, image_data_uri: str = "") -> dict:
         input_data = {"name": name.strip()}

@@ -37,7 +37,7 @@ Stash plugin dispatcher ── HTTP ──> FastAPI service
 ```
 
 The service does not need access to Stash's media filesystem. It downloads image
-URLs from the configured Stash API and stores only private crops and embeddings.
+URLs from the configured Stash API and stores only private crops and embeddings. For video indexing, an existing Stash `paths.preview` is preferred, staged temporarily under `FACE_DATA_DIR` for ffmpeg, and deleted after the six frames are extracted; the original video is used only as a fallback.
 
 ## Native installation
 

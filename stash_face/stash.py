@@ -199,7 +199,10 @@ class StashClient:
                              preview_url: Optional[str] = None) -> List[tuple[float, Image.Image]]:
         real_path = Path(os.path.realpath(path))
         roots = [Path(root).resolve() for root in self.settings.video_roots]
-        if not any(real_path == root or root in real_path.parents for root in roots):
+        # A Stash preview is an authorized remote source. The original video
+        # path may exist only inside the Stash VM, so local root validation is
+        # needed only when no preview URL is available.
+        if not preview_url and not any(real_path == root or root in real_path.parents for root in roots):
             raise UpstreamError("Video path is outside the configured video roots")
         ffmpeg = shutil.which("ffmpeg") or "/mnt/stash-normal/ffmpeg"
         if not os.path.isfile(ffmpeg):

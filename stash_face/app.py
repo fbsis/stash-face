@@ -1,6 +1,9 @@
 """FastAPI application for Immich-style Face Recognition and Stash integration."""
 import base64
+import json
 import logging
+import multiprocessing as mp
+import time
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -54,35 +57,84 @@ class SuggestionDecisionRequest(BaseModel):
     decision: str = Field(..., pattern="^(accepted|rejected|ignored)$")
 
 
+def worker_process_entry():
+    """Load OpenVINO and run the queue outside the HTTP process.
+
+    Keeping model initialization in a spawned process prevents an accelerator
+    crash from taking the dashboard/API down during slow GPU startup.
+    """
+    settings = Settings.from_env()
+    ready_path = settings.data_dir / "worker.ready.json"
+    ready_path.unlink(missing_ok=True)
+    worker = None
+    try:
+        store = Store(settings.data_dir)
+        stash = StashClient(settings)
+        detector = Detector(settings)
+        worker = Worker(settings, store, stash, detector)
+        ready_path.write_text(json.dumps(detector.info()), encoding="utf-8")
+        ready_path.chmod(0o600)
+        worker.start()
+        while any(thread.is_alive() for thread in worker.threads):
+            time.sleep(1)
+    finally:
+        ready_path.unlink(missing_ok=True)
+        if worker is not None:
+            worker.stop()
+
+
 def create_app() -> FastAPI:
     settings = Settings.from_env()
     store = Store(settings.data_dir)
-    stash = StashClient(settings)
-    detector = Detector(settings)
-    worker = Worker(settings, store, stash, detector)
+    runtime = {"process": None}
+    ready_path = settings.data_dir / "worker.ready.json"
 
     app = FastAPI(title="Stash Face Recognition", version="1.0.0", docs_url=None, redoc_url=None)
 
     @app.on_event("startup")
     def startup():
-        worker.start()
+        ctx = mp.get_context("spawn")
+        process = ctx.Process(target=worker_process_entry, name="stash-face-worker", daemon=True)
+        process.start()
+        runtime["process"] = process
 
     @app.on_event("shutdown")
     def shutdown():
-        worker.stop()
+        process = runtime.get("process")
+        if process is not None and process.is_alive():
+            process.terminate()
+            process.join(timeout=10)
+            if process.is_alive():
+                process.kill()
 
     def auth_dep(tok: Optional[str] = Security(api_token)):
         return check_auth(settings, tok)
 
     @app.get("/health")
     def health(_: None = Depends(auth_dep)):
+        process = runtime.get("process")
+        ready = bool(process and process.is_alive() and ready_path.exists())
+        detector_info = {
+            "provider": "insightface", "model_name": settings.model_name,
+            "actual_device": "initializing", "execution_provider": "initializing",
+            "embeddings": False, "initializing": True,
+        }
+        if ready:
+            try:
+                detector_info = json.loads(ready_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                ready = False
+        process_error = None
+        if process is not None and not process.is_alive() and process.exitcode not in (None, 0):
+            process_error = f"worker process exited with code {process.exitcode}"
         return {
-            "status": "ok",
+            "status": "ok" if ready else ("error" if process_error else "initializing"),
             "version": "1.0.0",
             "stash_url": settings.stash_url,
-            "worker_alive": any(thread.is_alive() for thread in worker.threads),
-            "worker_threads": len(worker.threads),
-            "detector": detector.info(),
+            "worker_alive": ready,
+            "worker_threads": settings.workers if ready else 0,
+            "detector": detector_info,
+            "initialization_error": process_error,
             "stats": store.stats(),
         }
 

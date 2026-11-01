@@ -63,6 +63,7 @@ class Store:
               created_at REAL NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_faces_active ON faces(active, id);
+            CREATE INDEX IF NOT EXISTS idx_faces_image ON faces(image_id);
             CREATE INDEX IF NOT EXISTS idx_faces_cluster ON faces(cluster_id);
             CREATE INDEX IF NOT EXISTS idx_faces_performer ON faces(performer_id);
 
@@ -135,12 +136,18 @@ class Store:
               WHERE state IN ('queued', 'running', 'retry');
             """)
 
-            # Backfill the media inventory for photos indexed before the inventory was added.
-            con.execute("""INSERT OR IGNORE INTO media
-                (media_key, media_type, source_id, title, content_key, detector_key, status, face_count, indexed_at)
-                SELECT id, 'image', id, title, content_key, detector_key,
-                       'indexed', (SELECT count(*) FROM faces f WHERE f.image_id=images.id AND f.active=1), processed_at
-                FROM images""")
+            # Backfill only a brand-new/empty media inventory. Repeating the
+            # correlated face count on every restart made startup quadratic.
+            if con.execute("SELECT 1 FROM media LIMIT 1").fetchone() is None:
+                con.execute("""INSERT OR IGNORE INTO media
+                    (media_key, media_type, source_id, title, content_key, detector_key, status, face_count, indexed_at)
+                    SELECT i.id, 'image', i.id, i.title, i.content_key, i.detector_key,
+                           'indexed', coalesce(fc.face_count, 0), i.processed_at
+                    FROM images i
+                    LEFT JOIN (
+                      SELECT image_id, count(*) AS face_count
+                      FROM faces WHERE active=1 GROUP BY image_id
+                    ) fc ON fc.image_id=i.id""")
 
             # Ensure any missing columns exist
             job_cols = {row[1] for row in con.execute("PRAGMA table_info(jobs)")}

@@ -138,10 +138,16 @@ class Worker:
         if image:
             files = [f for f in value.get("visual_files", []) if f.get("__typename") == "ImageFile"]
             if files:
-                raw = files[0].get("parent_folder") or files[0].get("path")
-                return str(raw) if files[0].get("parent_folder") else (str(Path(raw).parent) if raw else "")
-        raw = value.get("parent_folder") or value.get("path")
-        return str(raw) if value.get("parent_folder") else (str(Path(raw).parent) if raw else "")
+                parent = files[0].get("parent_folder")
+                if isinstance(parent, dict):
+                    return str(parent.get("path") or "")
+                raw = parent or files[0].get("path")
+                return str(raw) if parent else (str(Path(raw).parent) if raw else "")
+        parent = value.get("parent_folder")
+        if isinstance(parent, dict):
+            return str(parent.get("path") or "")
+        raw = parent or value.get("path")
+        return str(raw) if parent else (str(Path(raw).parent) if raw else "")
 
     def scan(self, payload: dict) -> dict:
         page, received, seen = 1, 0, set()

@@ -17,13 +17,13 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 log = logging.getLogger(__name__)
 
 IMAGE_FIELDS = """id title updated_at paths { image } performers { id name }
-visual_files { __typename ... on ImageFile { id path parent_folder mod_time size fingerprints { type value } } }"""
+visual_files { __typename ... on ImageFile { id path parent_folder { path } mod_time size fingerprints { type value } } }"""
 IMAGES = "query ReviewImages($page:Int!) { findImages(filter:{page:$page,per_page:100,sort:\"id\",direction:ASC}) { count images { " + IMAGE_FIELDS + " } } }"
 IMAGE = "query ReviewImage($id:ID!) { findImage(id:$id) { " + IMAGE_FIELDS + " } }"
 SCENE = """query ReviewScene($id:ID!) { findScene(id:$id) { paths { preview } files { __typename id path } } }"""
 SCENES = """query ReviewScenes($page:Int!) { findScenes(filter:{page:$page,per_page:100,sort:\"id\",direction:ASC}) {
  count scenes { id title updated_at paths { screenshot preview } files { __typename ... on VideoFile {
- id path parent_folder mod_time size duration width height } } } } }"""
+ id path parent_folder { path } mod_time size duration width height } } } } }"""
 PERFORMERS = """query ReviewPerformers($page:Int!,$q:String!) {
  findPerformers(filter:{page:$page,per_page:50,q:$q,sort:"name",direction:ASC}) {
  count performers { id name image_path } } }"""

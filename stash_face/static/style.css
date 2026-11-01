@@ -466,7 +466,7 @@ body {
 }
 .media-list { display: grid; gap: 0.5rem; }
 .cluster-status { color: var(--primary); font-weight: 600; }
-.status-legend { color: var(--muted); font-size: 0.82rem; }
+.status-legend { color: var(--text-muted); font-size: 0.82rem; }
 .statistics-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.75rem; margin-bottom: 1.25rem; }
 .statistics-card { display: flex; flex-direction: column; gap: 0.25rem; padding: 1rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-input); }
 .statistics-card strong { color: var(--primary); font-size: 1.35rem; }

@@ -57,6 +57,12 @@ class SuggestionDecisionRequest(BaseModel):
     decision: str = Field(..., pattern="^(accepted|rejected|ignored)$")
 
 
+class IdentityRelationRequest(BaseModel):
+    cluster_id: int
+    other_cluster_id: int
+    relation: str = Field(..., pattern="^(same|different)$")
+
+
 def worker_process_entry():
     """Load OpenVINO and run the queue outside the HTTP process.
 
@@ -196,17 +202,48 @@ def create_app() -> FastAPI:
         suggestion = store.suggestion(suggestion_id)
         if not suggestion:
             raise HTTPException(status_code=404, detail="Suggestion not found")
-        if req.decision == "accepted" and settings.auto_tag_stash and suggestion.get("performer_id"):
-            try:
-                if suggestion["media_type"] == "image":
-                    stash.add_performers([suggestion["media_key"]], [suggestion["performer_id"]])
-                else:
-                    stash.add_scene_performers([suggestion["source_id"]], [suggestion["performer_id"]])
-            except Exception as exc:
-                log.warning("Could not apply suggestion %s to Stash: %s", suggestion_id, exc)
-                raise HTTPException(status_code=502, detail=f"Stash rejected the suggested tag: {exc}") from exc
         result = store.decide_suggestion(suggestion_id, req.decision)
-        return {"success": True, "decision": req.decision, "suggestion": result}
+        return {"success": True, "decision": req.decision, "sync_state": "pending" if req.decision == "accepted" else "not_required", "suggestion": result}
+
+    @app.post("/identity-relations")
+    def identity_relation(req: IdentityRelationRequest, _: None = Depends(auth_dep)):
+        try:
+            relation = store.apply_identity_relation(req.cluster_id, req.other_cluster_id, req.relation)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        cleared = store.clear_pending_folder_suggestions()
+        job_id, created = store.enqueue("rebuild_suggestions", {}, "suggestions:rebuild")
+        return {"success": True, "relation": relation, "pending_suggestions_cleared": cleared,
+                "rebuild_job_id": job_id, "rebuild_created": created}
+
+    @app.post("/suggestions-sync")
+    def sync_suggestions(_: None = Depends(auth_dep)):
+        rows = store.suggestions_for_sync()
+        groups = {}
+        for row in rows:
+            performer_id = row.get("performer_id")
+            if not performer_id:
+                store.mark_suggestions_sync_failed([row["id"]], "No linked Performer")
+                continue
+            key = (row["media_type"], str(performer_id))
+            groups.setdefault(key, []).append(row)
+        synced = failed = 0
+        for (media_type, performer_id), group in groups.items():
+            ids = [int(row["id"]) for row in group]
+            try:
+                if media_type == "image":
+                    ok = stash.add_performers([row["media_key"] for row in group], [performer_id])
+                else:
+                    ok = stash.add_scene_performers([row["source_id"] for row in group], [performer_id])
+                if not ok:
+                    raise RuntimeError("Stash returned an unsuccessful bulk update")
+                store.mark_suggestions_synced(ids)
+                synced += len(ids)
+            except Exception as exc:
+                store.mark_suggestions_sync_failed(ids, str(exc))
+                failed += len(ids)
+                log.warning("Could not sync %d accepted suggestions to Stash: %s", len(ids), exc)
+        return {"success": failed == 0, "found": len(rows), "synced": synced, "failed": failed}
 
     @app.get("/stash/status")
     def stash_status(_: None = Depends(auth_dep)):
@@ -214,7 +251,7 @@ def create_app() -> FastAPI:
 
     @app.post("/jobs")
     def enqueue_job(req: JobRequest, _: None = Depends(auth_dep)):
-        if req.action not in ("scan", "cluster", "sync_performers", "auto_tag", "image", "video", "forget"):
+        if req.action not in ("scan", "cluster", "sync_performers", "auto_tag", "rebuild_suggestions", "image", "video", "forget"):
             raise HTTPException(status_code=400, detail="Unsupported action")
 
         payload = {"force": req.force}

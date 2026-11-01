@@ -477,7 +477,7 @@ body {
 .statistics-group dl { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.45rem 1rem; margin: 0; font-size: 0.82rem; }
 .statistics-group dt { color: var(--text-muted); }
 .statistics-group dd { margin: 0; color: var(--text-main); font-weight: 600; text-align: right; }
-.suggestions-list { display: grid; gap: 0.75rem; }
+.suggestions-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 0.75rem; align-items: start; }
 .suggestion-card { display: flex; gap: 1rem; align-items: flex-start; padding: 1rem; border: 1px solid var(--border); border-radius: 0.75rem; background: var(--surface); cursor: pointer; }
 .suggestion-card.expanded { border-color: var(--primary); }
 .suggestion-avatar { width: 64px; height: 64px; object-fit: cover; border-radius: 0.5rem; background: var(--surface-alt); }
@@ -492,6 +492,7 @@ body {
 .suggestion-gallery-card img { width: 44px; height: 44px; flex: 0 0 44px; object-fit: cover; border-radius: 0.3rem; background: var(--bg-input); }
 .suggestion-gallery-card span { overflow-wrap: anywhere; }
 .suggestion-detail a { color: var(--primary); }
+.identity-relation-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.35rem; }
 .suggestion-actions { display: flex; gap: 0.5rem; margin-top: 0.4rem; }
 
 @media (max-width: 768px) {

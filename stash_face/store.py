@@ -109,6 +109,16 @@ class Store:
             );
             CREATE INDEX IF NOT EXISTS idx_suggestions_status ON suggestions(status, score DESC);
 
+            CREATE TABLE IF NOT EXISTS identity_relations (
+              cluster_a INTEGER NOT NULL,
+              cluster_b INTEGER NOT NULL,
+              relation TEXT NOT NULL CHECK (relation IN ('same', 'different')),
+              created_at REAL NOT NULL,
+              updated_at REAL NOT NULL,
+              PRIMARY KEY (cluster_a, cluster_b)
+            );
+            CREATE INDEX IF NOT EXISTS idx_identity_relations_relation ON identity_relations(relation);
+
             CREATE TABLE IF NOT EXISTS known_performers (
               performer_id TEXT PRIMARY KEY,
               name TEXT NOT NULL,
@@ -151,6 +161,12 @@ class Store:
                     ) fc ON fc.image_id=i.id""")
 
             # Ensure any missing columns exist
+            suggestion_cols = {row[1] for row in con.execute("PRAGMA table_info(suggestions)")}
+            if "sync_state" not in suggestion_cols:
+                con.execute("ALTER TABLE suggestions ADD COLUMN sync_state TEXT NOT NULL DEFAULT 'not_required'")
+            if "sync_error" not in suggestion_cols:
+                con.execute("ALTER TABLE suggestions ADD COLUMN sync_error TEXT")
+
             job_cols = {row[1] for row in con.execute("PRAGMA table_info(jobs)")}
             if "stage" not in job_cols:
                 con.execute("ALTER TABLE jobs ADD COLUMN stage TEXT NOT NULL DEFAULT 'queued'")
@@ -705,7 +721,12 @@ class Store:
                      AND im.media_type='image' AND im.parent_folder <> ''
                    ORDER BY im.parent_folder, c.id"""
             ).fetchall()
+            relation_rows = con.execute(
+                "SELECT cluster_a, cluster_b FROM identity_relations WHERE relation='different'"
+            ).fetchall()
 
+        excluded_pairs = {(min(row["cluster_a"], row["cluster_b"]), max(row["cluster_a"], row["cluster_b"]))
+                          for row in relation_rows}
         folder_clusters = defaultdict(list)
         for row in folder_rows:
             folder_clusters[row["parent_folder"]].append(dict(row))
@@ -721,7 +742,11 @@ class Store:
                 for media in batch:
                     folder = str(media["parent_folder"])
                     clusters = folder_clusters.get(folder, [])
-                    if not clusters or len(clusters) > max_clusters:
+                    cluster_ids = sorted(int(candidate["cluster_id"]) for candidate in clusters)
+                    if (not clusters or len(clusters) > max_clusters
+                            or any((a, b) in excluded_pairs
+                                   for index, a in enumerate(cluster_ids)
+                                   for b in cluster_ids[index + 1:])):
                         continue
                     for candidate in clusters[:limit_per_media]:
                         reason = {
@@ -757,7 +782,7 @@ class Store:
                 """SELECT s.id, s.media_key, s.cluster_id, s.score, s.reason, s.status,
                           s.created_at, s.updated_at, m.media_type, m.source_id, m.file_id,
                           m.title, m.parent_folder, c.name AS cluster_name,
-                          c.performer_id, c.exemplar_crop
+                          c.performer_id, c.exemplar_crop, s.sync_state, s.sync_error
                    FROM suggestions s JOIN media m ON m.media_key=s.media_key
                    JOIN clusters c ON c.id=s.cluster_id """ + where +
                 " ORDER BY s.score DESC, s.id DESC LIMIT ? OFFSET ?",
@@ -814,6 +839,76 @@ class Store:
             suggestion["folder_unidentified_count"] = len(unidentified_rows)
             return suggestion
 
+    def clear_pending_folder_suggestions(self) -> int:
+        with self.connection() as con:
+            cur = con.execute(
+                "DELETE FROM suggestions WHERE status='pending' AND reason LIKE '%same_folder%'"
+            )
+            return cur.rowcount
+
+    def apply_identity_relation(self, cluster_a: int, cluster_b: int, relation: str) -> Dict[str, Any]:
+        if relation not in ("same", "different"):
+            raise ValueError("Unsupported identity relation")
+        if cluster_a == cluster_b:
+            raise ValueError("An identity cannot be related to itself")
+        now = time.time()
+        low, high = sorted((int(cluster_a), int(cluster_b)))
+        merged_into = None
+        if relation == "same":
+            with self.connection() as con:
+                counts = {
+                    int(row["id"]): int(row["face_count"] or 0)
+                    for row in con.execute(
+                        "SELECT id, face_count FROM clusters WHERE id IN (?, ?)", (cluster_a, cluster_b)
+                    )
+                }
+            if cluster_a not in counts or cluster_b not in counts:
+                raise ValueError("Identity cluster not found")
+            target = cluster_a if counts[cluster_a] >= counts[cluster_b] else cluster_b
+            source = cluster_b if target == cluster_a else cluster_a
+            self.merge_clusters(source, target)
+            merged_into = target
+        with self.connection() as con:
+            con.execute(
+                """INSERT INTO identity_relations
+                   (cluster_a, cluster_b, relation, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(cluster_a, cluster_b) DO UPDATE SET
+                     relation=excluded.relation, updated_at=excluded.updated_at""",
+                (low, high, relation, now, now),
+            )
+        return {"cluster_a": low, "cluster_b": high, "relation": relation, "merged_into": merged_into}
+
+    def suggestions_for_sync(self) -> List[Dict[str, Any]]:
+        with self.connection() as con:
+            rows = con.execute(
+                """SELECT s.id, s.media_key, s.cluster_id, s.sync_state,
+                          m.media_type, m.source_id, c.performer_id
+                   FROM suggestions s JOIN media m ON m.media_key=s.media_key
+                   JOIN clusters c ON c.id=s.cluster_id
+                   WHERE s.status='accepted' AND s.sync_state IN ('pending', 'failed')
+                   ORDER BY s.id"""
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def mark_suggestions_synced(self, suggestion_ids: List[int]):
+        if not suggestion_ids:
+            return
+        with self.connection() as con:
+            con.executemany(
+                "UPDATE suggestions SET sync_state='synced', sync_error=NULL, updated_at=? WHERE id=?",
+                [(time.time(), int(suggestion_id)) for suggestion_id in suggestion_ids],
+            )
+
+    def mark_suggestions_sync_failed(self, suggestion_ids: List[int], error: str):
+        if not suggestion_ids:
+            return
+        with self.connection() as con:
+            con.executemany(
+                "UPDATE suggestions SET sync_state='failed', sync_error=?, updated_at=? WHERE id=?",
+                [(error, time.time(), int(suggestion_id)) for suggestion_id in suggestion_ids],
+            )
+
     def decide_suggestion(self, suggestion_id: int, decision: str) -> Optional[Dict[str, Any]]:
         if decision not in ("accepted", "rejected", "ignored"):
             raise ValueError("Unsupported suggestion decision")
@@ -842,6 +937,8 @@ class Store:
                 )
                 con.execute("UPDATE media SET status='approved' WHERE media_key=?",
                             (row["media_key"],))
+                con.execute("UPDATE suggestions SET sync_state='pending', sync_error=NULL WHERE id=?",
+                            (suggestion_id,))
             return dict(row)
 
     def get_clusters(self, q: str = "", filter_type: str = "all") -> List[Dict[str, Any]]:
@@ -948,6 +1045,14 @@ class Store:
                 "UPDATE faces SET cluster_id=? WHERE cluster_id=? AND active=1",
                 (target_id, source_id),
             )
+            # Preserve local assignments while moving the source cluster.
+            con.execute(
+                """DELETE FROM media_assignments
+                   WHERE cluster_id=? AND media_key IN
+                     (SELECT media_key FROM media_assignments WHERE cluster_id=?)""",
+                (source_id, target_id),
+            )
+            con.execute("UPDATE media_assignments SET cluster_id=? WHERE cluster_id=?", (target_id, source_id))
             # Recalculate target count
             count = con.execute(
                 "SELECT count(*) FROM faces WHERE cluster_id=? AND active=1",

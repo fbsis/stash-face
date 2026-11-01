@@ -108,6 +108,7 @@ class Worker:
             "cluster": "clustering embeddings",
             "sync_performers": "syncing Performer references",
             "auto_tag": "matching names from file paths",
+            "rebuild_suggestions": "rebuilding review suggestions",
             "forget": "removing deleted media",
         }.get(job["kind"], "processing")
 
@@ -133,6 +134,14 @@ class Worker:
             return self.sync_performers()
         elif kind == "auto_tag":
             return self.auto_tag(payload)
+        elif kind == "rebuild_suggestions":
+            self.store.clear_pending_folder_suggestions()
+            created = self.store.create_folder_suggestions(
+                progress=lambda done, total: self.progress(
+                    "rebuilding suggestions", f"{done:,}/{total:,} candidate media"
+                )
+            )
+            return {"suggestions_created": created}
         raise ValueError(f"Unknown job kind: {kind}")
 
     @staticmethod

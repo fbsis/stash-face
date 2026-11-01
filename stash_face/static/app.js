@@ -416,6 +416,24 @@ function addSuggestionLinkRow(parent, label, value, url) {
   parent.append(row);
 }
 
+async function applyIdentityRelation(clusterId, otherClusterId, relation, event) {
+  event.stopPropagation();
+  const label = relation === "same" ? "merge these identities as the same person" : "mark these identities as different people";
+  if (!confirm(`Confirm: ${label}?`)) return;
+  try {
+    const result = await api("/identity-relations", "POST", {
+      cluster_id: Number(clusterId), other_cluster_id: Number(otherClusterId), relation
+    });
+    suggestionsSignature = "";
+    expandedSuggestionId = null;
+    notify(`${relation === "same" ? "Identity merged" : "Identity exclusion saved"}. Rebuilding suggestions...`);
+    await loadSuggestions();
+    return result;
+  } catch (err) {
+    notify(`Identity decision failed: ${err.message}`);
+  }
+}
+
 async function showSuggestionDetail(item, body, card) {
   const existing = body.querySelector(".suggestion-detail");
   if (existing) { existing.remove(); card.classList.remove("expanded"); expandedSuggestionId = null; return; }
@@ -454,6 +472,18 @@ async function showSuggestionDetail(item, body, card) {
         if (identity.performer_id) label.append(document.createTextNode(` · Performer #${identity.performer_id}`));
         else label.append(document.createTextNode(" · no Performer linked"));
         card.append(label);
+        if (Number(identity.id) !== Number(item.cluster_id)) {
+          const actions = document.createElement("div");
+          actions.className = "identity-relation-actions";
+          for (const [relation, text] of [["same", "Same person"], ["different", "Different people"]]) {
+            const button = document.createElement("button");
+            button.className = "btn btn-small btn-ghost";
+            button.textContent = text;
+            button.onclick = event => applyIdentityRelation(item.cluster_id, identity.id, relation, event);
+            actions.append(button);
+          }
+          card.append(actions);
+        }
         identities.append(card);
       }
       detail.append(identities);
@@ -542,7 +572,10 @@ async function loadSuggestions() {
         }
         body.append(actions);
       } else {
-        const state = document.createElement("span"); state.className = "badge"; state.textContent = item.status; body.append(state);
+        const state = document.createElement("span");
+        state.className = "badge";
+        state.textContent = `${item.status} · ${item.sync_state || "not_required"}`;
+        body.append(state);
       }
       card.append(body); list.append(card);
       if (item.id === previousExpandedId) showSuggestionDetail(item, body, card);
@@ -732,7 +765,15 @@ $("view-faces").onclick = () => { setView("faces"); loadFaces(); };
 $("view-suggestions").onclick = () => { setView("suggestions"); loadSuggestions(); };
 $("view-statistics").onclick = () => { setView("statistics"); loadStatistics(); };
 $("stats-refresh").onclick = loadStatistics;
-$("suggestions-status").onchange = loadSuggestions;
+$("suggestions-status").onchange = () => { suggestionsSignature = ""; loadSuggestions(); };
+$("sync-suggestions").onclick = async () => {
+  try {
+    const result = await api("/suggestions-sync", "POST");
+    notify(`Stash sync finished: ${result.synced} synced, ${result.failed} failed.`);
+    suggestionsSignature = "";
+    loadSuggestions();
+  } catch (err) { notify(`Stash sync failed: ${err.message}`); }
+};
 $("media-status-filter").onchange = loadMedia;
 $("media-type-filter").onchange = loadMedia;
 $("faces-filter").onchange = () => loadFaces(true);

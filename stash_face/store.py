@@ -3,9 +3,10 @@ import json
 import sqlite3
 import time
 import uuid
+from collections import defaultdict
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
@@ -666,15 +667,25 @@ class Store:
                                (SELECT DISTINCT image_id FROM faces WHERE cluster_id IS NOT NULL AND active=1)""")
             return moved
 
-    def create_folder_suggestions(self, max_clusters: int = 5, limit_per_media: int = 5) -> int:
+    def create_folder_suggestions(
+        self,
+        max_clusters: int = 5,
+        limit_per_media: int = 5,
+        progress: Optional[Callable[[int, int], None]] = None,
+        batch_size: int = 500,
+    ) -> int:
         """Create reviewable same-folder suggestions for unresolved media.
 
         Existing face clusters are authoritative and excluded. Suggestions are
         deliberately media-level so a no-face image can still be reviewed and
         associated with a person without fabricating a face embedding.
+
+        Candidates and folder identities are loaded once, then suggestions are
+        written in batches. This avoids one SQLite query per media item and
+        keeps progress updates visible to the job dashboard.
         """
         with self.connection() as con:
-            candidates = con.execute(
+            candidates = [dict(row) for row in con.execute(
                 """SELECT m.media_key, m.media_type, m.source_id, m.file_id, m.parent_folder
                    FROM media m
                    WHERE m.parent_folder <> ''
@@ -685,43 +696,57 @@ class Store:
                        WHERE f.image_id=m.media_key AND f.active=1 AND f.cluster_id IS NOT NULL
                      )
                      AND (m.media_type='image' OR m.frame_index=0)"""
+            ).fetchall()]
+            folder_rows = con.execute(
+                """SELECT DISTINCT im.parent_folder, f.cluster_id, c.name, c.performer_id
+                   FROM faces f JOIN media im ON im.media_key=f.image_id
+                   JOIN clusters c ON c.id=f.cluster_id
+                   WHERE f.active=1 AND f.cluster_id IS NOT NULL
+                     AND im.media_type='image' AND im.parent_folder <> ''
+                   ORDER BY im.parent_folder, c.id"""
             ).fetchall()
-            created = 0
-            now = time.time()
-            for media in candidates:
-                folder = str(media["parent_folder"])
-                clusters = con.execute(
-                    """SELECT DISTINCT f.cluster_id, c.name, c.performer_id
-                       FROM faces f JOIN media im ON im.media_key=f.image_id
-                       JOIN clusters c ON c.id=f.cluster_id
-                       WHERE f.active=1 AND f.cluster_id IS NOT NULL
-                         AND im.media_type='image' AND im.parent_folder=?
-                       ORDER BY c.id""",
-                    (folder,),
-                ).fetchall()
-                if not clusters or len(clusters) > max_clusters:
-                    continue
-                for candidate in clusters[:limit_per_media]:
-                    reason = {
-                        "same_folder": folder,
-                        "folder_identities": len(clusters),
-                        "face_match": False,
-                        "performer_linked": bool(candidate["performer_id"]),
-                    }
-                    score = 0.80 if candidate["performer_id"] else 0.68
-                    cur = con.execute(
-                        """INSERT INTO suggestions
-                           (media_key, cluster_id, score, reason, status, created_at, updated_at)
-                           VALUES (?, ?, ?, ?, 'pending', ?, ?)
-                           ON CONFLICT(media_key, cluster_id) DO UPDATE SET
-                             score=excluded.score, reason=excluded.reason,
-                             updated_at=excluded.updated_at
-                           WHERE suggestions.status='pending'""",
-                        (media["media_key"], candidate["cluster_id"], score,
-                         json.dumps(reason, sort_keys=True), now, now),
-                    )
-                    created += int(cur.rowcount > 0)
-            return created
+
+        folder_clusters = defaultdict(list)
+        for row in folder_rows:
+            folder_clusters[row["parent_folder"]].append(dict(row))
+
+        total = len(candidates)
+        if progress:
+            progress(0, total)
+        created = 0
+        for start in range(0, total, max(1, batch_size)):
+            batch = candidates[start:start + max(1, batch_size)]
+            with self.connection() as con:
+                now = time.time()
+                for media in batch:
+                    folder = str(media["parent_folder"])
+                    clusters = folder_clusters.get(folder, [])
+                    if not clusters or len(clusters) > max_clusters:
+                        continue
+                    for candidate in clusters[:limit_per_media]:
+                        reason = {
+                            "same_folder": folder,
+                            "folder_identities": len(clusters),
+                            "face_match": False,
+                            "performer_linked": bool(candidate["performer_id"]),
+                        }
+                        score = 0.80 if candidate["performer_id"] else 0.68
+                        cur = con.execute(
+                            """INSERT INTO suggestions
+                               (media_key, cluster_id, score, reason, status, created_at, updated_at)
+                               VALUES (?, ?, ?, ?, 'pending', ?, ?)
+                               ON CONFLICT(media_key, cluster_id) DO UPDATE SET
+                                 score=excluded.score, reason=excluded.reason,
+                                 updated_at=excluded.updated_at
+                               WHERE suggestions.status='pending'""",
+                            (media["media_key"], candidate["cluster_id"], score,
+                             json.dumps(reason, sort_keys=True), now, now),
+                        )
+                        created += int(cur.rowcount > 0)
+            completed = min(start + len(batch), total)
+            if progress:
+                progress(completed, total)
+        return created
 
     def suggestions_page(self, status: str = "pending", limit: int = 100, offset: int = 0) -> Dict[str, Any]:
         with self.connection() as con:

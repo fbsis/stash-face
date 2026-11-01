@@ -456,7 +456,11 @@ class Worker:
         faces = self.store.get_all_faces_with_embeddings(unclustered_only=True)
         if not faces:
             self.progress("generating suggestions", "No unclustered faces; checking unresolved media")
-            suggestions = self.store.create_folder_suggestions()
+            suggestions = self.store.create_folder_suggestions(
+                progress=lambda done, total: self.progress(
+                    "generating suggestions", f"{done:,}/{total:,} candidate media"
+                )
+            )
             return {"clusters_created": 0, "faces_evaluated": 0, "clusters_reset": removed,
                     "folder_fallback": 0, "suggestions_created": suggestions, "performers_created": 0}
 
@@ -469,7 +473,11 @@ class Worker:
         self.progress("creating Performers", "Creating placeholder Performers for unnamed clusters")
         performers_created = self.create_unknown_performers()
         self.progress("generating suggestions", "Generating review suggestions for unresolved media")
-        suggestions_created = self.store.create_folder_suggestions()
+        suggestions_created = self.store.create_folder_suggestions(
+            progress=lambda done, total: self.progress(
+                "generating suggestions", f"{done:,}/{total:,} candidate media"
+            )
+        )
         log.info("Final DBSCAN clustering finished: %d clusters created from %d faces; %d folder fallbacks; "
                  "%d suggestions; %d placeholder Performers created", created, len(faces),
                  folder_fallback, suggestions_created, performers_created)

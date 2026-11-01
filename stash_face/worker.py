@@ -411,7 +411,11 @@ class Worker:
         if not self.settings.auto_create_unknown_performers:
             return 0
         created_count = 0
-        for person in self.store.get_clusters(filter_type="unnamed"):
+        people = self.store.get_clusters(filter_type="unnamed")
+        total_people = len(people)
+        for person_index, person in enumerate(people, start=1):
+            if person_index == 1 or person_index % 10 == 0 or person_index == total_people:
+                self.progress("creating Performers", f"{person_index}/{total_people} placeholder clusters")
             cluster_id = int(person["id"])
             name = f"Unknown Person #{cluster_id:04d}"
             try:
@@ -446,17 +450,25 @@ class Worker:
         if self.store.has_pending_media_jobs() and not allow_pending:
             raise UpstreamError("Waiting for photo/video jobs before final clustering", retryable=True)
         log.info("Running final DBSCAN face clustering%s...", " immediately" if allow_pending else "")
+        self.progress("preparing clustering", "Resetting previous unlinked clusters")
         removed = self.store.reset_unlinked_clusters()
+        self.progress("loading embeddings", "Loading active face embeddings")
         faces = self.store.get_all_faces_with_embeddings(unclustered_only=True)
         if not faces:
+            self.progress("generating suggestions", "No unclustered faces; checking unresolved media")
             suggestions = self.store.create_folder_suggestions()
             return {"clusters_created": 0, "faces_evaluated": 0, "clusters_reset": removed,
                     "folder_fallback": 0, "suggestions_created": suggestions, "performers_created": 0}
 
+        self.progress("clustering embeddings", f"DBSCAN analyzing {len(faces):,} faces")
         assignments, cluster_stats = self.clusterer.cluster(faces)
+        self.progress("saving clusters", f"Persisting {len(cluster_stats):,} DBSCAN clusters")
         created = self.store.apply_clustering(assignments, cluster_stats)
+        self.progress("folder fallback", "Checking unresolved faces against same-folder images")
         folder_fallback = self.store.apply_folder_hints(max_clusters=5, max_distance=self.settings.cluster_eps)
+        self.progress("creating Performers", "Creating placeholder Performers for unnamed clusters")
         performers_created = self.create_unknown_performers()
+        self.progress("generating suggestions", "Generating review suggestions for unresolved media")
         suggestions_created = self.store.create_folder_suggestions()
         log.info("Final DBSCAN clustering finished: %d clusters created from %d faces; %d folder fallbacks; "
                  "%d suggestions; %d placeholder Performers created", created, len(faces),

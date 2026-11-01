@@ -487,6 +487,11 @@ body {
 .suggestion-detail strong { color: var(--text-main); }
 .suggestion-detail ul { margin: 0.15rem 0 0.35rem 1.1rem; padding: 0; max-height: 220px; overflow: auto; }
 .suggestion-detail li { margin-bottom: 0.15rem; }
+.suggestion-gallery { display: flex; flex-wrap: wrap; gap: 0.6rem; margin: 0.25rem 0 0.5rem; }
+.suggestion-gallery-card { display: flex; align-items: center; gap: 0.45rem; max-width: 240px; padding: 0.35rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-card); font-size: 0.78rem; }
+.suggestion-gallery-card img { width: 44px; height: 44px; flex: 0 0 44px; object-fit: cover; border-radius: 0.3rem; background: var(--bg-input); }
+.suggestion-gallery-card span { overflow-wrap: anywhere; }
+.suggestion-detail a { color: var(--primary); }
 .suggestion-actions { display: flex; gap: 0.5rem; margin-top: 0.4rem; }
 
 @media (max-width: 768px) {

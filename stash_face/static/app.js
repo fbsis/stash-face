@@ -2,6 +2,7 @@
 
 const $ = id => document.getElementById(id);
 let token = "";
+let stashUrl = "";
 let currentFilter = "all";
 let currentSearch = "";
 let selectedPerson = null;
@@ -63,6 +64,7 @@ async function connect(provided) {
 
   try {
     const health = await api("/health");
+    stashUrl = (health.stash_url || "").replace(/\/$/, "");
     localStorage.setItem("stash_face_token", token);
 
     $("connect-form").hidden = true;
@@ -87,6 +89,7 @@ async function connect(provided) {
 function disconnect() {
   localStorage.removeItem("stash_face_token");
   token = "";
+  stashUrl = "";
   $("token").value = "";
   $("connect-form").hidden = false;
   $("action-controls").hidden = true;
@@ -372,11 +375,44 @@ async function loadMedia() {
   }
 }
 
+function stashMediaUrl(media) {
+  if (!stashUrl || !media?.source_id) return "";
+  const kind = media.media_type === "video" ? "scenes" : "images";
+  return `${stashUrl}/${kind}/${encodeURIComponent(media.source_id)}`;
+}
+
+function stashPerformerUrl(performerId) {
+  return stashUrl && performerId ? `${stashUrl}/performers/${encodeURIComponent(performerId)}` : "";
+}
+
+function stashFolderUrl(folder) {
+  if (!stashUrl || !folder) return "";
+  return `${stashUrl}/images?paths=${encodeURIComponent(JSON.stringify([folder]))}`;
+}
+
+function makeExternalLink(label, url) {
+  if (!url) return document.createTextNode(label);
+  const link = document.createElement("a");
+  link.href = url;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.textContent = label;
+  return link;
+}
+
 function addSuggestionDetailRow(parent, label, value) {
   const row = document.createElement("div");
   const strong = document.createElement("strong");
   strong.textContent = `${label}: `;
   row.append(strong, document.createTextNode(value));
+  parent.append(row);
+}
+
+function addSuggestionLinkRow(parent, label, value, url) {
+  const row = document.createElement("div");
+  const strong = document.createElement("strong");
+  strong.textContent = `${label}: `;
+  row.append(strong, makeExternalLink(value, url));
   parent.append(row);
 }
 
@@ -393,19 +429,32 @@ async function showSuggestionDetail(item, body, card) {
     const data = await api(`/suggestions/${item.id}`);
     detail.replaceChildren();
     const reason = data.reason_details || {};
-    addSuggestionDetailRow(detail, "Folder", data.parent_folder || "Unknown folder");
+    addSuggestionLinkRow(detail, "Folder", data.parent_folder || "Unknown folder", stashFolderUrl(data.parent_folder));
+    addSuggestionLinkRow(detail, "Source media", data.title || data.source_id || data.media_key, stashMediaUrl(data));
     addSuggestionDetailRow(detail, "Evidence", "No direct face match; identity inferred from same-folder evidence");
     addSuggestionDetailRow(detail, "Identities in folder", `${reason.folder_identities || data.folder_identities?.length || 0}`);
     if (data.folder_identities?.length) {
       const identityTitle = document.createElement("strong");
       identityTitle.textContent = "Folder identities";
       detail.append(identityTitle);
-      const identities = document.createElement("ul");
+      const identities = document.createElement("div");
+      identities.className = "suggestion-gallery";
       for (const identity of data.folder_identities) {
-        const li = document.createElement("li");
-        li.textContent = `${identity.name || `Cluster #${identity.id}`} · ${identity.face_count || 0} faces` +
-          (identity.performer_id ? ` · Performer #${identity.performer_id}` : " · no Performer linked");
-        identities.append(li);
+        const card = document.createElement("div");
+        card.className = "suggestion-gallery-card";
+        if (identity.exemplar_crop) {
+          const img = document.createElement("img");
+          img.alt = identity.name || `Cluster #${identity.id}`;
+          setCropImage(img, identity.exemplar_crop);
+          card.append(img);
+        }
+        const label = document.createElement("span");
+        label.append(makeExternalLink(identity.name || `Cluster #${identity.id}`, stashPerformerUrl(identity.performer_id)));
+        label.append(document.createTextNode(` · ${identity.face_count || 0} faces`));
+        if (identity.performer_id) label.append(document.createTextNode(` · Performer #${identity.performer_id}`));
+        else label.append(document.createTextNode(" · no Performer linked"));
+        card.append(label);
+        identities.append(card);
       }
       detail.append(identities);
     }
@@ -413,11 +462,22 @@ async function showSuggestionDetail(item, body, card) {
     unresolvedTitle.textContent = `Other unidentified images in this folder (${data.folder_unidentified_count || 0})`;
     detail.append(unresolvedTitle);
     if (data.folder_unidentified_media?.length) {
-      const unresolved = document.createElement("ul");
+      const unresolved = document.createElement("div");
+      unresolved.className = "suggestion-gallery suggestion-unresolved";
       for (const media of data.folder_unidentified_media) {
-        const li = document.createElement("li");
-        li.textContent = `${media.title || media.source_id || media.media_key} · ${media.status}`;
-        unresolved.append(li);
+        const card = document.createElement("div");
+        card.className = "suggestion-gallery-card";
+        if (media.face_crop) {
+          const img = document.createElement("img");
+          img.alt = media.title || media.source_id || media.media_key;
+          setCropImage(img, media.face_crop);
+          card.append(img);
+        }
+        const label = document.createElement("span");
+        label.append(makeExternalLink(media.title || media.source_id || media.media_key, stashMediaUrl(media)));
+        label.append(document.createTextNode(` · ${media.status}`));
+        card.append(label);
+        unresolved.append(card);
       }
       detail.append(unresolved);
     } else {
@@ -458,7 +518,8 @@ async function loadSuggestions() {
       }
       const body = document.createElement("div"); body.className = "suggestion-body";
       const title = document.createElement("strong");
-      title.textContent = `${item.media_type === "video" ? "Video" : "Photo"}: ${item.title || item.source_id}`;
+      title.append(document.createTextNode(`${item.media_type === "video" ? "Video" : "Photo"}: `));
+      title.append(makeExternalLink(item.title || item.source_id, stashMediaUrl(item)));
       const target = document.createElement("div");
       target.textContent = `Suggested person: ${item.cluster_name || `#${item.cluster_id}`} (${Math.round(item.score * 100)}%)`;
       const folder = document.createElement("div"); folder.className = "suggestion-reason";

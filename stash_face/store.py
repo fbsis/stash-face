@@ -755,7 +755,7 @@ class Store:
             suggestion = dict(row)
             folder = suggestion.get("parent_folder") or ""
             identity_rows = con.execute(
-                """SELECT DISTINCT c.id, c.name, c.performer_id, c.face_count
+                """SELECT DISTINCT c.id, c.name, c.performer_id, c.face_count, c.exemplar_crop
                    FROM faces f JOIN media im ON im.media_key=f.image_id
                    JOIN clusters c ON c.id=f.cluster_id
                    WHERE f.active=1 AND f.cluster_id IS NOT NULL
@@ -764,7 +764,10 @@ class Store:
                 (folder,),
             ).fetchall() if folder else []
             unidentified_rows = con.execute(
-                """SELECT m.media_key, m.media_type, m.source_id, m.title, m.status
+                """SELECT m.media_key, m.media_type, m.source_id, m.title, m.status,
+                          (SELECT f.crop FROM faces f
+                           WHERE f.image_id=m.media_key AND f.active=1
+                           ORDER BY f.id DESC LIMIT 1) AS face_crop
                    FROM media m
                    WHERE m.parent_folder=? AND m.media_type='image'
                      AND m.media_key<>?

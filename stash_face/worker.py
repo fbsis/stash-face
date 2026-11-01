@@ -102,7 +102,7 @@ class Worker:
         return {
             "scan": "enumerating media",
             "image": "detecting and embedding faces",
-            "video": "extracting and embedding six frames",
+            "video": "extracting and embedding three frames",
             "cluster": "clustering embeddings",
             "sync_performers": "syncing Performer references",
             "auto_tag": "matching names from file paths",
@@ -133,6 +133,16 @@ class Worker:
             return self.auto_tag(payload)
         raise ValueError(f"Unknown job kind: {kind}")
 
+    @staticmethod
+    def _folder(value: dict, image: bool = False) -> str:
+        if image:
+            files = [f for f in value.get("visual_files", []) if f.get("__typename") == "ImageFile"]
+            if files:
+                raw = files[0].get("parent_folder") or files[0].get("path")
+                return str(raw) if files[0].get("parent_folder") else (str(Path(raw).parent) if raw else "")
+        raw = value.get("parent_folder") or value.get("path")
+        return str(raw) if value.get("parent_folder") else (str(Path(raw).parent) if raw else "")
+
     def scan(self, payload: dict) -> dict:
         page, received, seen = 1, 0, set()
         enqueued = skipped = 0
@@ -153,7 +163,8 @@ class Worker:
                 seen.add(img_id)
 
                 image_key = content_key(image)
-                self.store.register_media(img_id, "image", img_id, image.get("title", ""), image_key)
+                self.store.register_media(img_id, "image", img_id, image.get("title", ""), image_key,
+                                           parent_folder=self._folder(image, image=True))
                 if not force and self.store.unchanged(img_id, image_key, self.detector.signature):
                     skipped += 1
                     continue
@@ -167,7 +178,7 @@ class Worker:
                 break
             page += 1
 
-        # Scenes are indexed separately. Each video gets exactly six evenly-spaced frame records.
+        # Scenes are indexed separately. Each video gets exactly three evenly-spaced frame records.
         scene_page, scene_received, video_count = 1, 0, 0
         while True:
             self.check_stop()
@@ -187,13 +198,15 @@ class Worker:
                         frame_key = f"video:{scene_id}:{file_id}:frame:{frame_index}"
                         self.store.register_media(frame_key, "video", scene_id, scene.get("title", ""),
                                                   video_key, file_id, frame_index,
-                                                  float(video.get("duration") or 0) * (frame_index + 1) / 7)
+                                                  float(video.get("duration") or 0) * (frame_index + 1)
+                                                  / (self.settings.video_frame_count + 1),
+                                                  self._folder(video))
                     key = f"video:{scene_id}:{file_id}:{video_key}:{force}"
                     _, created = self.store.enqueue("video", {
                         "scene_id": scene_id, "file_id": file_id, "path": video["path"],
                         "preview": (scene.get("paths") or {}).get("preview"),
                         "duration": float(video.get("duration") or 0), "title": scene.get("title", ""),
-                        "content_key": video_key, "force": force,
+                        "content_key": video_key, "folder": self._folder(video), "force": force,
                     }, key)
                     enqueued += int(created)
                     video_count += 1
@@ -262,7 +275,8 @@ class Worker:
                 })
 
             self.store.save_detection(image_id, ckey, self.detector.signature, image.get("title", ""),
-                                      saved_detections, media_type="image", source_id=image_id)
+                                      saved_detections, media_type="image", source_id=image_id,
+                                      parent_folder=self._folder(image, image=True))
 
             # Auto-match against known performers if available
             if self.settings.auto_tag_stash:
@@ -288,16 +302,19 @@ class Worker:
             payload["path"], payload.get("duration", 0), self.settings.video_frame_count, preview,
         )
         faces_found = 0
-        for frame_index, (frame_time, picture) in enumerate(frames):
+        self.progress("detecting video frames", f"batched {len(frames)}-frame GPU inference")
+        detections_batch = self.detector.detect_batch([picture for _, picture in frames])
+        for frame_index, ((frame_time, picture), detections) in enumerate(zip(frames, detections_batch)):
             self.check_stop()
-            self.progress("detecting video frame", f"frame {frame_index + 1}/6 at {frame_time:.2f}s")
+            self.progress("detecting video frame",
+                          f"frame {frame_index + 1}/{len(frames)} at {frame_time:.2f}s")
             media_key = f"video:{scene_id}:{file_id}:frame:{frame_index}"
-            detections = self.detector.detect(picture)
             saved = self._save_detections(picture, detections)
             self.store.save_detection(media_key, payload["content_key"], self.detector.signature,
                                       payload.get("title", ""), saved, media_type="video",
                                       source_id=scene_id, file_id=file_id,
-                                      frame_index=frame_index, frame_time=frame_time)
+                                      frame_index=frame_index, frame_time=frame_time,
+                                      parent_folder=payload.get("folder", ""))
             faces_found += len(saved)
             if self.settings.auto_tag_stash:
                 self.auto_match_scene_faces(scene_id, saved)
@@ -421,14 +438,20 @@ class Worker:
         removed = self.store.reset_unlinked_clusters()
         faces = self.store.get_all_faces_with_embeddings(unclustered_only=True)
         if not faces:
-            return {"clusters_created": 0, "faces_evaluated": 0, "clusters_reset": removed, "performers_created": 0}
+            suggestions = self.store.create_folder_suggestions()
+            return {"clusters_created": 0, "faces_evaluated": 0, "clusters_reset": removed,
+                    "folder_fallback": 0, "suggestions_created": suggestions, "performers_created": 0}
 
         assignments, cluster_stats = self.clusterer.cluster(faces)
         created = self.store.apply_clustering(assignments, cluster_stats)
+        folder_fallback = self.store.apply_folder_hints(max_clusters=5, max_distance=self.settings.cluster_eps)
         performers_created = self.create_unknown_performers()
-        log.info("DBSCAN clustering finished: %d clusters created from %d faces; %d placeholder Performers created",
-                 created, len(faces), performers_created)
+        suggestions_created = self.store.create_folder_suggestions()
+        log.info("DBSCAN clustering finished: %d clusters created from %d faces; %d folder fallbacks; "
+                 "%d suggestions; %d placeholder Performers created", created, len(faces),
+                 folder_fallback, suggestions_created, performers_created)
         return {"clusters_created": created, "faces_evaluated": len(faces), "clusters_reset": removed,
+                "folder_fallback": folder_fallback, "suggestions_created": suggestions_created,
                 "performers_created": performers_created}
 
     def sync_performers(self) -> dict:

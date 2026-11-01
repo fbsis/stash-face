@@ -37,7 +37,7 @@ class Settings:
     max_preview_bytes: int = 512_000_000
     video_roots: tuple[Path, ...] = (Path("/mnt"),)
     auto_tag_paths: tuple[str, ...] = ("/mnt",)
-    video_frame_count: int = 6
+    video_frame_count: int = 3
 
     def __post_init__(self):
         url = urlsplit(self.stash_url)
@@ -54,8 +54,8 @@ class Settings:
             raise ValueError("Invalid detection score or minimum size")
         if not 0 < self.cluster_eps <= 2 or self.min_faces < 2:
             raise ValueError("Invalid clustering configuration")
-        if self.video_frame_count != 6 or not self.video_roots or not self.auto_tag_paths:
-            raise ValueError("Video indexing requires exactly six frames and at least one allowed root")
+        if self.video_frame_count != 3 or not self.video_roots or not self.auto_tag_paths:
+            raise ValueError("Video indexing requires exactly three frames and at least one allowed root")
 
     @classmethod
     def from_env(cls):
@@ -88,5 +88,5 @@ class Settings:
             max_preview_bytes=int(os.getenv("FACE_MAX_PREVIEW_BYTES", "512000000")),
             video_roots=video_roots,
             auto_tag_paths=auto_tag_paths,
-            video_frame_count=6,
+            video_frame_count=int(os.getenv("FACE_VIDEO_FRAME_COUNT", "3")),
         )

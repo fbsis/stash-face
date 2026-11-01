@@ -12,6 +12,7 @@ with DBSCAN, and optionally assigns linked Stash Performers automatically.
 - Full-library scan task for existing Stash images.
 - Automatic clustering of unknown faces by visual similarity.
 - Automatic Performer tagging for clusters linked to a Stash Performer.
+- Human-reviewed same-folder suggestions for unresolved faces and no-face media.
 - Optional creation of a new Stash Performer from a discovered person cluster.
 - Immich-style People grid with counts, search, filters, merge and hide actions.
 - Persistent SQLite state and private face crops.
@@ -37,7 +38,7 @@ Stash plugin dispatcher ── HTTP ──> FastAPI service
 ```
 
 The service does not need access to Stash's media filesystem. It downloads image
-URLs from the configured Stash API and stores only private crops and embeddings. For video indexing, an existing Stash `paths.preview` is preferred, staged temporarily under `FACE_DATA_DIR` for ffmpeg, and deleted after the six frames are extracted; the original video is used only as a fallback.
+URLs from the configured Stash API and stores only private crops and embeddings. For video indexing, an existing Stash `paths.preview` is preferred, staged temporarily under `FACE_DATA_DIR` for ffmpeg, and deleted after three frames are extracted; the original video is used only as a fallback. Frames are decoded in one ffmpeg process and sent to the GPU recognition model as a batch.
 
 ## Native installation
 
@@ -128,6 +129,8 @@ when their file fingerprint and model signature are unchanged.
 6. Linked clusters are added to the corresponding Stash images. Future matching
    faces are tagged automatically when their distance is below
    `FACE_PERFORMER_THRESHOLD`.
+7. Review folder suggestions in the dashboard. Accepting a suggestion is additive;
+   rejecting it is recorded and never overrides a stronger face match.
 
 A cluster link stores its centroid as a reference embedding. This is more useful
 than relying only on a small Performer portrait and is updated when the cluster
@@ -144,6 +147,8 @@ unassigned.
 - `GET /people`
 - `GET /people/{id}`
 - `GET /faces?filter=all|clustered|unclustered|named|unknown`
+- `GET /suggestions?status=pending|accepted|rejected|ignored|all`
+- `POST /suggestions/{id}/decision`
 
 The dashboard's **All Faces** view displays paginated face crops with filters for
 all, grouped, ungrouped, named/linked, and unknown faces. Original Stash media

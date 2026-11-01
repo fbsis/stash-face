@@ -77,12 +77,35 @@ class Store:
               status TEXT NOT NULL DEFAULT 'unindexed',
               frame_index INTEGER,
               frame_time REAL,
+              parent_folder TEXT NOT NULL DEFAULT '',
               face_count INTEGER NOT NULL DEFAULT 0,
               last_error TEXT,
               indexed_at REAL
             );
             CREATE INDEX IF NOT EXISTS idx_media_status ON media(status, media_type);
             CREATE INDEX IF NOT EXISTS idx_media_source ON media(media_type, source_id, file_id);
+
+            CREATE TABLE IF NOT EXISTS media_assignments (
+              media_key TEXT PRIMARY KEY REFERENCES media(media_key) ON DELETE CASCADE,
+              cluster_id INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+              performer_id TEXT,
+              matched_by TEXT NOT NULL,
+              created_at REAL NOT NULL,
+              updated_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS suggestions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              media_key TEXT NOT NULL REFERENCES media(media_key) ON DELETE CASCADE,
+              cluster_id INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+              score REAL NOT NULL,
+              reason TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'pending',
+              created_at REAL NOT NULL,
+              updated_at REAL NOT NULL,
+              UNIQUE(media_key, cluster_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_suggestions_status ON suggestions(status, score DESC);
 
             CREATE TABLE IF NOT EXISTS known_performers (
               performer_id TEXT PRIMARY KEY,
@@ -125,6 +148,11 @@ class Store:
                 con.execute("ALTER TABLE jobs ADD COLUMN stage TEXT NOT NULL DEFAULT 'queued'")
             if "detail" not in job_cols:
                 con.execute("ALTER TABLE jobs ADD COLUMN detail TEXT")
+
+            media_cols = {row[1] for row in con.execute("PRAGMA table_info(media)")}
+            if "parent_folder" not in media_cols:
+                con.execute("ALTER TABLE media ADD COLUMN parent_folder TEXT NOT NULL DEFAULT ''")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_media_folder ON media(parent_folder, media_type)")
 
             cols = {row[1] for row in con.execute("PRAGMA table_info(faces)")}
             if "embedding" not in cols:
@@ -172,23 +200,27 @@ class Store:
         file_id: Optional[str] = None,
         frame_index: Optional[int] = None,
         frame_time: Optional[float] = None,
+        parent_folder: str = "",
     ) -> bool:
         with self.connection() as con:
             row = con.execute("SELECT content_key, status FROM media WHERE media_key=?", (media_key,)).fetchone()
             if row and row["content_key"] == content_key and row["status"] not in ("failed", "unindexed"):
+                con.execute("UPDATE media SET parent_folder=?, title=? WHERE media_key=?",
+                            (parent_folder or "", title or "", media_key))
                 return False
             con.execute(
                 """INSERT INTO media
-                   (media_key, media_type, source_id, file_id, title, content_key, status, frame_index, frame_time)
-                   VALUES (?, ?, ?, ?, ?, ?, 'unindexed', ?, ?)
+                   (media_key, media_type, source_id, file_id, title, content_key, status,
+                    frame_index, frame_time, parent_folder)
+                   VALUES (?, ?, ?, ?, ?, ?, 'unindexed', ?, ?, ?)
                    ON CONFLICT(media_key) DO UPDATE SET
                      media_type=excluded.media_type, source_id=excluded.source_id,
                      file_id=excluded.file_id, title=excluded.title,
                      content_key=excluded.content_key, status='unindexed',
                      frame_index=excluded.frame_index, frame_time=excluded.frame_time,
-                     last_error=NULL""",
+                     parent_folder=excluded.parent_folder, last_error=NULL""",
                 (media_key, media_type, str(source_id), file_id, title or "", content_key,
-                 frame_index, frame_time),
+                 frame_index, frame_time, parent_folder or ""),
             )
             return True
 
@@ -283,6 +315,7 @@ class Store:
         file_id: Optional[str] = None,
         frame_index: Optional[int] = None,
         frame_time: Optional[float] = None,
+        parent_folder: str = "",
     ) -> List[int]:
         now = time.time()
         inserted_ids = []
@@ -302,18 +335,18 @@ class Store:
             con.execute(
                 """INSERT INTO media
                    (media_key, media_type, source_id, file_id, title, content_key, detector_key,
-                    status, frame_index, frame_time, face_count, last_error, indexed_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+                    status, frame_index, frame_time, parent_folder, face_count, last_error, indexed_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
                    ON CONFLICT(media_key) DO UPDATE SET
                      media_type=excluded.media_type, source_id=excluded.source_id,
                      file_id=excluded.file_id, title=excluded.title,
                      content_key=excluded.content_key, detector_key=excluded.detector_key,
                      status=excluded.status, frame_index=excluded.frame_index,
-                     frame_time=excluded.frame_time, face_count=excluded.face_count,
-                     last_error=NULL, indexed_at=excluded.indexed_at""",
+                     frame_time=excluded.frame_time, parent_folder=excluded.parent_folder,
+                     face_count=excluded.face_count, last_error=NULL, indexed_at=excluded.indexed_at""",
                 (str(image_id), media_type, str(source_id or image_id), file_id, title or "",
                  content_key, detector_key, media_status, frame_index, frame_time,
-                 len(detections), now),
+                 parent_folder or "", len(detections), now),
             )
 
             for d in detections:
@@ -413,6 +446,184 @@ class Store:
 
         return created_count
 
+    def apply_folder_hints(self, max_clusters: int = 5, max_distance: float = 0.45) -> int:
+        """Use same-folder image clusters only as a fallback for video faces.
+
+        DBSCAN/known-performer matches remain authoritative. A video face is
+        moved only when it is currently unnamed/unmatched, the folder has at
+        most ``max_clusters`` image identities, and its embedding agrees with
+        one of those image-cluster centroids.
+        """
+        with self.connection() as con:
+            rows = con.execute(
+                """SELECT f.id, f.cluster_id, f.embedding, m.parent_folder
+                   FROM faces f JOIN media m ON m.media_key=f.image_id
+                   WHERE f.active=1 AND f.embedding IS NOT NULL
+                     AND m.media_type='video' AND f.performer_id IS NULL"""
+            ).fetchall()
+            moved = 0
+            for face in rows:
+                folder = str(face["parent_folder"] or "")
+                if not folder:
+                    continue
+                candidates = con.execute(
+                    """SELECT f.cluster_id, f.embedding
+                       FROM faces f JOIN media m ON m.media_key=f.image_id
+                       WHERE f.active=1 AND f.embedding IS NOT NULL
+                         AND m.media_type='image' AND m.parent_folder=?
+                         AND f.cluster_id IS NOT NULL""",
+                    (folder,),
+                ).fetchall()
+                cluster_ids = sorted({int(row["cluster_id"]) for row in candidates})
+                if not cluster_ids or len(cluster_ids) > max_clusters:
+                    continue
+                target_vectors = {}
+                for row in candidates:
+                    target_vectors.setdefault(int(row["cluster_id"]), []).append(
+                        np.frombuffer(row["embedding"], dtype=np.float32))
+                emb = np.frombuffer(face["embedding"], dtype=np.float32)
+                best_id, best_distance = None, 2.0
+                for cluster_id, vectors in target_vectors.items():
+                    centroid = np.mean(vectors, axis=0)
+                    norm = np.linalg.norm(centroid)
+                    if not norm:
+                        continue
+                    distance = 1.0 - float(np.dot(emb, centroid / norm))
+                    if distance < best_distance:
+                        best_id, best_distance = cluster_id, distance
+                if (face["cluster_id"] is None and best_id is not None
+                        and best_distance <= max_distance):
+                    con.execute("UPDATE faces SET cluster_id=?, matched_by='folder_fallback' WHERE id=?",
+                                (best_id, face["id"]))
+                    moved += 1
+
+            if moved:
+                con.execute("""UPDATE clusters SET face_count=(
+                    SELECT count(*) FROM faces WHERE faces.cluster_id=clusters.id AND faces.active=1
+                ), updated_at=?""", (time.time(),))
+                con.execute("""DELETE FROM clusters
+                             WHERE performer_id IS NULL
+                               AND NOT EXISTS (SELECT 1 FROM faces WHERE faces.cluster_id=clusters.id AND faces.active=1)""")
+                con.execute("""UPDATE media SET status='clustered'
+                             WHERE media_type='video' AND media_key IN
+                               (SELECT DISTINCT image_id FROM faces WHERE cluster_id IS NOT NULL AND active=1)""")
+            return moved
+
+    def create_folder_suggestions(self, max_clusters: int = 5, limit_per_media: int = 5) -> int:
+        """Create reviewable same-folder suggestions for unresolved media.
+
+        Existing face clusters are authoritative and excluded. Suggestions are
+        deliberately media-level so a no-face image can still be reviewed and
+        associated with a person without fabricating a face embedding.
+        """
+        with self.connection() as con:
+            candidates = con.execute(
+                """SELECT m.media_key, m.media_type, m.source_id, m.file_id, m.parent_folder
+                   FROM media m
+                   WHERE m.parent_folder <> ''
+                     AND m.status IN ('indexed', 'no_faces', 'clustered')
+                     AND NOT EXISTS (SELECT 1 FROM media_assignments a WHERE a.media_key=m.media_key)
+                     AND NOT EXISTS (
+                       SELECT 1 FROM faces f
+                       WHERE f.image_id=m.media_key AND f.active=1 AND f.cluster_id IS NOT NULL
+                     )
+                     AND (m.media_type='image' OR m.frame_index=0)"""
+            ).fetchall()
+            created = 0
+            now = time.time()
+            for media in candidates:
+                folder = str(media["parent_folder"])
+                clusters = con.execute(
+                    """SELECT DISTINCT f.cluster_id, c.name, c.performer_id
+                       FROM faces f JOIN media im ON im.media_key=f.image_id
+                       JOIN clusters c ON c.id=f.cluster_id
+                       WHERE f.active=1 AND f.cluster_id IS NOT NULL
+                         AND im.media_type='image' AND im.parent_folder=?
+                       ORDER BY c.id""",
+                    (folder,),
+                ).fetchall()
+                if not clusters or len(clusters) > max_clusters:
+                    continue
+                for candidate in clusters[:limit_per_media]:
+                    reason = {
+                        "same_folder": folder,
+                        "folder_identities": len(clusters),
+                        "face_match": False,
+                        "performer_linked": bool(candidate["performer_id"]),
+                    }
+                    score = 0.80 if candidate["performer_id"] else 0.68
+                    cur = con.execute(
+                        """INSERT INTO suggestions
+                           (media_key, cluster_id, score, reason, status, created_at, updated_at)
+                           VALUES (?, ?, ?, ?, 'pending', ?, ?)
+                           ON CONFLICT(media_key, cluster_id) DO UPDATE SET
+                             score=excluded.score, reason=excluded.reason,
+                             updated_at=excluded.updated_at
+                           WHERE suggestions.status='pending'""",
+                        (media["media_key"], candidate["cluster_id"], score,
+                         json.dumps(reason, sort_keys=True), now, now),
+                    )
+                    created += int(cur.rowcount > 0)
+            return created
+
+    def suggestions_page(self, status: str = "pending", limit: int = 100, offset: int = 0) -> Dict[str, Any]:
+        with self.connection() as con:
+            where = "" if status == "all" else "WHERE s.status=?"
+            params = [] if status == "all" else [status]
+            total = con.execute("SELECT count(*) FROM suggestions s " + where, params).fetchone()[0]
+            rows = con.execute(
+                """SELECT s.id, s.media_key, s.cluster_id, s.score, s.reason, s.status,
+                          s.created_at, s.updated_at, m.media_type, m.source_id, m.file_id,
+                          m.title, m.parent_folder, c.name AS cluster_name,
+                          c.performer_id, c.exemplar_crop
+                   FROM suggestions s JOIN media m ON m.media_key=s.media_key
+                   JOIN clusters c ON c.id=s.cluster_id """ + where +
+                " ORDER BY s.score DESC, s.id DESC LIMIT ? OFFSET ?",
+                params + [min(max(limit, 1), 200), max(offset, 0)],
+            ).fetchall()
+            return {"total": total, "items": [dict(row) for row in rows]}
+
+    def suggestion(self, suggestion_id: int) -> Optional[Dict[str, Any]]:
+        with self.connection() as con:
+            row = con.execute(
+                """SELECT s.*, m.media_type, m.source_id, m.file_id, m.title,
+                          c.name AS cluster_name, c.performer_id
+                   FROM suggestions s JOIN media m ON m.media_key=s.media_key
+                   JOIN clusters c ON c.id=s.cluster_id WHERE s.id=?""",
+                (suggestion_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def decide_suggestion(self, suggestion_id: int, decision: str) -> Optional[Dict[str, Any]]:
+        if decision not in ("accepted", "rejected", "ignored"):
+            raise ValueError("Unsupported suggestion decision")
+        now = time.time()
+        with self.connection() as con:
+            row = con.execute(
+                """SELECT s.*, m.media_type, m.source_id, m.file_id, m.title,
+                          c.performer_id
+                   FROM suggestions s JOIN media m ON m.media_key=s.media_key
+                   JOIN clusters c ON c.id=s.cluster_id WHERE s.id=?""",
+                (suggestion_id,),
+            ).fetchone()
+            if not row:
+                return None
+            con.execute("UPDATE suggestions SET status=?, updated_at=? WHERE id=?",
+                        (decision, now, suggestion_id))
+            if decision == "accepted":
+                con.execute(
+                    """INSERT INTO media_assignments
+                       (media_key, cluster_id, performer_id, matched_by, created_at, updated_at)
+                       VALUES (?, ?, ?, 'suggestion', ?, ?)
+                       ON CONFLICT(media_key) DO UPDATE SET
+                         cluster_id=excluded.cluster_id, performer_id=excluded.performer_id,
+                         matched_by=excluded.matched_by, updated_at=excluded.updated_at""",
+                    (row["media_key"], row["cluster_id"], row["performer_id"], now, now),
+                )
+                con.execute("UPDATE media SET status='approved' WHERE media_key=?",
+                            (row["media_key"],))
+            return dict(row)
+
     def get_clusters(self, q: str = "", filter_type: str = "all") -> List[Dict[str, Any]]:
         query = """SELECT c.id, c.name, c.performer_id, c.exemplar_crop, c.face_count, c.hidden,
                           c.updated_at, COUNT(DISTINCT f.image_id) as image_count
@@ -491,13 +702,20 @@ class Store:
                 (str(performer_id), cluster_id),
             )
             con.execute(
+                "UPDATE media_assignments SET performer_id=?, updated_at=? WHERE cluster_id=?",
+                (str(performer_id), now, cluster_id),
+            )
+            con.execute(
                 """UPDATE media SET status='approved' WHERE media_key IN
-                   (SELECT DISTINCT image_id FROM faces WHERE cluster_id=? AND active=1)""",
-                (cluster_id,),
+                   (SELECT DISTINCT image_id FROM faces WHERE cluster_id=? AND active=1)
+                   OR media_key IN (SELECT media_key FROM media_assignments WHERE cluster_id=?)""",
+                (cluster_id, cluster_id),
             )
             rows = con.execute(
-                "SELECT DISTINCT image_id FROM faces WHERE cluster_id=? AND active=1",
-                (cluster_id,),
+                """SELECT DISTINCT image_id FROM faces WHERE cluster_id=? AND active=1
+                   UNION SELECT a.media_key FROM media_assignments a JOIN media m ON m.media_key=a.media_key
+                   WHERE a.cluster_id=? AND m.media_type='image'""",
+                (cluster_id, cluster_id),
             ).fetchall()
             return [str(r[0]) for r in rows]
 

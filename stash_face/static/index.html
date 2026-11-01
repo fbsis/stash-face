@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Stash Face Recognition — Immich-Style AI Recognition</title>
-  <link rel="stylesheet" href="/assets/style.css?v=2">
-  <script src="/assets/app.js?v=2" defer></script>
+  <link rel="stylesheet" href="/assets/style.css?v=3">
+  <script src="/assets/app.js?v=3" defer></script>
 </head>
 <body>
   <!-- Main Header -->
@@ -62,6 +62,7 @@
         <button id="view-people" class="pill active">People</button>
         <button id="view-media" class="pill">Media Index</button>
         <button id="view-faces" class="pill">All Faces</button>
+        <button id="view-suggestions" class="pill">Suggestions</button>
       </div>
       <div class="search-box">
         <span class="search-icon">🔍</span>
@@ -100,6 +101,20 @@
       <p id="faces-progress" class="media-progress">Loading faces...</p>
       <div id="faces-list" class="faces-list"></div>
       <button id="faces-load-more" class="btn btn-secondary" hidden>Load more faces</button>
+    </section>
+
+    <section id="suggestions-panel" class="media-panel" hidden>
+      <div class="media-toolbar">
+        <h2>Review Suggestions</h2>
+        <select id="suggestions-status">
+          <option value="pending">Pending</option>
+          <option value="accepted">Accepted</option>
+          <option value="rejected">Rejected</option>
+          <option value="all">All</option>
+        </select>
+      </div>
+      <p id="suggestions-progress" class="media-progress">Loading suggestions...</p>
+      <div id="suggestions-list" class="suggestions-list"></div>
     </section>
 
     <section id="media-panel" class="media-panel" hidden>

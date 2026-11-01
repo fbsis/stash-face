@@ -50,6 +50,10 @@ class MergePersonRequest(BaseModel):
     target_id: int
 
 
+class SuggestionDecisionRequest(BaseModel):
+    decision: str = Field(..., pattern="^(accepted|rejected|ignored)$")
+
+
 def create_app() -> FastAPI:
     settings = Settings.from_env()
     store = Store(settings.data_dir)
@@ -112,6 +116,32 @@ def create_app() -> FastAPI:
         if status_filter not in allowed:
             raise HTTPException(status_code=400, detail="Unsupported media status")
         return store.media_page(status_filter, media_type, limit, offset)
+
+    @app.get("/suggestions")
+    def suggestions(
+        status_filter: str = Query("pending", alias="status", pattern="^(pending|accepted|rejected|ignored|all)$"),
+        limit: int = 100,
+        offset: int = 0,
+        _: None = Depends(auth_dep),
+    ):
+        return store.suggestions_page(status_filter, limit, offset)
+
+    @app.post("/suggestions/{suggestion_id}/decision")
+    def decide_suggestion(suggestion_id: int, req: SuggestionDecisionRequest, _: None = Depends(auth_dep)):
+        suggestion = store.suggestion(suggestion_id)
+        if not suggestion:
+            raise HTTPException(status_code=404, detail="Suggestion not found")
+        if req.decision == "accepted" and settings.auto_tag_stash and suggestion.get("performer_id"):
+            try:
+                if suggestion["media_type"] == "image":
+                    stash.add_performers([suggestion["media_key"]], [suggestion["performer_id"]])
+                else:
+                    stash.add_scene_performers([suggestion["source_id"]], [suggestion["performer_id"]])
+            except Exception as exc:
+                log.warning("Could not apply suggestion %s to Stash: %s", suggestion_id, exc)
+                raise HTTPException(status_code=502, detail="Stash rejected the suggested tag") from exc
+        result = store.decide_suggestion(suggestion_id, req.decision)
+        return {"success": True, "decision": req.decision, "suggestion": result}
 
     @app.get("/stash/status")
     def stash_status(_: None = Depends(auth_dep)):

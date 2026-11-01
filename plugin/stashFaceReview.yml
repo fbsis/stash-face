@@ -1,5 +1,5 @@
 name: Stash Face Recognition
-description: Automatic face recognition, six-frame video indexing, clustering and Performer assignment (Immich-style).
+description: Automatic face recognition, three-frame video indexing, clustering and Performer assignment (Immich-style).
 version: 1.0.0
 url: https://github.com/fbsis/stash-face
 exec:

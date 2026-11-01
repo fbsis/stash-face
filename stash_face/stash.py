@@ -17,13 +17,13 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 log = logging.getLogger(__name__)
 
 IMAGE_FIELDS = """id title updated_at paths { image } performers { id name }
-visual_files { __typename ... on ImageFile { id mod_time size fingerprints { type value } } }"""
+visual_files { __typename ... on ImageFile { id path parent_folder mod_time size fingerprints { type value } } }"""
 IMAGES = "query ReviewImages($page:Int!) { findImages(filter:{page:$page,per_page:100,sort:\"id\",direction:ASC}) { count images { " + IMAGE_FIELDS + " } } }"
 IMAGE = "query ReviewImage($id:ID!) { findImage(id:$id) { " + IMAGE_FIELDS + " } }"
 SCENE = """query ReviewScene($id:ID!) { findScene(id:$id) { paths { preview } files { __typename id path } } }"""
 SCENES = """query ReviewScenes($page:Int!) { findScenes(filter:{page:$page,per_page:100,sort:\"id\",direction:ASC}) {
  count scenes { id title updated_at paths { screenshot preview } files { __typename ... on VideoFile {
- id path mod_time size duration width height } } } } }"""
+ id path parent_folder mod_time size duration width height } } } } }"""
 PERFORMERS = """query ReviewPerformers($page:Int!,$q:String!) {
  findPerformers(filter:{page:$page,per_page:50,q:$q,sort:"name",direction:ASC}) {
  count performers { id name image_path } } }"""
@@ -195,7 +195,7 @@ class StashClient:
             staged.unlink(missing_ok=True)
             raise
 
-    def extract_video_frames(self, path: str, duration: float, count: int = 6,
+    def extract_video_frames(self, path: str, duration: float, count: int = 3,
                              preview_url: Optional[str] = None) -> List[tuple[float, Image.Image]]:
         real_path = Path(os.path.realpath(path))
         roots = [Path(root).resolve() for root in self.settings.video_roots]
@@ -234,17 +234,33 @@ class StashClient:
                     log.warning("Could not determine staged Stash preview duration; using scene duration")
         output = []
         try:
-            for index in range(count):
-                timestamp = safe_duration * (index + 1) / (count + 1)
-                command = [ffmpeg, "-hide_banner", "-loglevel", "error", "-ss", f"{timestamp:.3f}",
-                           "-i", str(input_path), "-frames:v", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"]
-                try:
-                    result = subprocess.run(command, check=True, capture_output=True, timeout=90)
-                    with Image.open(io.BytesIO(result.stdout)) as frame:
-                        output.append((timestamp, frame.convert("RGB")))
-                except (subprocess.SubprocessError, OSError, UnidentifiedImageError) as exc:
-                    raise UpstreamError(f"Video frame extraction failed: {type(exc).__name__}", True) from None
+            # Decode the preview once and emit all requested frames. This avoids
+            # launching one ffmpeg process and reopening the MP4 for every frame.
+            period = safe_duration / (count + 1)
+            start = period
+            fps = 1.0 / period
+            command = [ffmpeg, "-hide_banner", "-loglevel", "error", "-i", str(input_path),
+                       "-ss", f"{start:.6f}", "-vf", f"fps={fps:.8f}",
+                       "-frames:v", str(count), "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"]
+            result = subprocess.run(command, check=True, capture_output=True, timeout=120)
+            data = result.stdout
+            offset = 0
+            while len(output) < count:
+                begin = data.find(b"\xff\xd8", offset)
+                if begin < 0:
+                    break
+                end = data.find(b"\xff\xd9", begin + 2)
+                if end < 0:
+                    break
+                with Image.open(io.BytesIO(data[begin:end + 2])) as frame:
+                    timestamp = safe_duration * (len(output) + 1) / (count + 1)
+                    output.append((timestamp, frame.convert("RGB")))
+                offset = end + 2
+            if len(output) != count:
+                raise UnidentifiedImageError("ffmpeg returned fewer frames than requested")
             return output
+        except (subprocess.SubprocessError, OSError, UnidentifiedImageError) as exc:
+            raise UpstreamError(f"Video frame extraction failed: {type(exc).__name__}", True) from None
         finally:
             if staged_preview:
                 staged_preview.unlink(missing_ok=True)

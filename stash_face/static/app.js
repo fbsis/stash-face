@@ -75,7 +75,7 @@ async function connect(provided) {
     await loadProgress();
     await loadJobs();
     clearInterval(progressTimer);
-    progressTimer = setInterval(() => { loadProgress(); loadJobs(); if (!$("media-panel").hidden) loadMedia(); }, 3000);
+    progressTimer = setInterval(() => { loadProgress(); loadJobs(); if (!$("media-panel").hidden) loadMedia(); if (!$("suggestions-panel").hidden) loadSuggestions(); }, 3000);
   } catch (err) {
     localStorage.removeItem("stash_face_token");
     notify("Connection failed: " + err.message);
@@ -133,7 +133,7 @@ function jobSteps(kind) {
   return {
     scan: ["enumerate media", "queue files"],
     image: ["download photo", "detect and embed faces", "save crop and embedding", "tag Performer"],
-    video: ["extract six frames", "detect and embed faces", "save frame results", "tag scene"],
+    video: ["extract three frames", "detect and embed faces on GPU", "save frame results", "tag scene"],
     cluster: ["load embeddings", "DBSCAN", "preserve links"],
     sync_performers: ["download references", "detect face", "save reference"],
     auto_tag: ["read file paths", "match existing names", "apply Stash metadata"],
@@ -242,12 +242,60 @@ async function loadMedia() {
       const state = document.createElement("span"); state.className = "media-state"; state.textContent = item.status;
       const title = document.createElement("span"); title.className = "media-title"; title.textContent = item.title || item.source_id;
       const source = document.createElement("span"); source.className = "media-source"; source.textContent = item.source_id;
-      const frame = document.createElement("span"); frame.textContent = item.media_type === "video" ? `frame ${Number(item.frame_index || 0) + 1}/6` : "photo";
+      const frame = document.createElement("span"); frame.textContent = item.media_type === "video" ? `frame ${Number(item.frame_index || 0) + 1}/3` : "photo";
       row.append(kind, state, title, source, frame); list.append(row);
     }
   } catch (err) {
     notify("Error loading media index: " + err.message);
   }
+}
+
+async function loadSuggestions() {
+  try {
+    const status = $("suggestions-status").value;
+    const result = await api(`/suggestions?status=${encodeURIComponent(status)}&limit=100`);
+    const list = $("suggestions-list");
+    list.replaceChildren();
+    if (!result.items.length) {
+      list.textContent = "No suggestions to review.";
+      $("suggestions-progress").textContent = "0 suggestions";
+      return;
+    }
+    for (const item of result.items) {
+      const card = document.createElement("article");
+      card.className = "suggestion-card";
+      if (item.exemplar_crop) {
+        const img = document.createElement("img"); img.className = "suggestion-avatar";
+        img.alt = "Suggested person"; setCropImage(img, item.exemplar_crop); card.append(img);
+      }
+      const body = document.createElement("div"); body.className = "suggestion-body";
+      const title = document.createElement("strong");
+      title.textContent = `${item.media_type === "video" ? "Video" : "Photo"}: ${item.title || item.source_id}`;
+      const target = document.createElement("div");
+      target.textContent = `Suggested person: ${item.cluster_name || `#${item.cluster_id}`} (${Math.round(item.score * 100)}%)`;
+      const folder = document.createElement("div"); folder.className = "suggestion-reason";
+      let reason = {};
+      try { reason = JSON.parse(item.reason || "{}"); } catch (_) {}
+      folder.textContent = `Same folder · ${reason.folder_identities || "?"} identities found`;
+      body.append(title, target, folder);
+      if (item.status === "pending") {
+        const actions = document.createElement("div"); actions.className = "suggestion-actions";
+        for (const [decision, label, cls] of [["accepted", "Accept", "btn-primary"], ["rejected", "Reject", "btn-ghost"]]) {
+          const button = document.createElement("button"); button.className = `btn btn-small ${cls}`; button.textContent = label;
+          button.onclick = async () => {
+            try { await api(`/suggestions/${item.id}/decision`, "POST", { decision }); notify(`Suggestion ${label.toLowerCase()}ed.`); loadSuggestions(); }
+            catch (err) { notify("Suggestion failed: " + err.message); }
+          };
+          actions.append(button);
+        }
+        body.append(actions);
+      } else {
+        const state = document.createElement("span"); state.className = "badge"; state.textContent = item.status; body.append(state);
+      }
+      card.append(body); list.append(card);
+    }
+    $("suggestions-progress").textContent = `${result.total} suggestions`;
+  } catch (err) { notify("Error loading suggestions: " + err.message); }
 }
 
 async function loadPeople() {
@@ -410,17 +458,21 @@ $("btn-sync-performers").onclick = async () => {
 
 // People / Media / All Faces views
 function setView(view) {
-  const people = view === "people", media = view === "media";
+  const people = view === "people", media = view === "media", suggestions = view === "suggestions";
   $("view-people").classList.toggle("active", people);
   $("view-media").classList.toggle("active", media);
   $("view-faces").classList.toggle("active", view === "faces");
+  $("view-suggestions").classList.toggle("active", suggestions);
   $("people-section").hidden = !people;
   $("media-panel").hidden = !media;
   $("faces-panel").hidden = view !== "faces";
+  $("suggestions-panel").hidden = !suggestions;
 }
 $("view-people").onclick = () => setView("people");
 $("view-media").onclick = () => { setView("media"); loadMedia(); loadProgress(); };
 $("view-faces").onclick = () => { setView("faces"); loadFaces(); };
+$("view-suggestions").onclick = () => { setView("suggestions"); loadSuggestions(); };
+$("suggestions-status").onchange = loadSuggestions;
 $("media-status-filter").onchange = loadMedia;
 $("media-type-filter").onchange = loadMedia;
 $("faces-filter").onchange = () => loadFaces(true);

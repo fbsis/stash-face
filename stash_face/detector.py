@@ -7,6 +7,8 @@ from typing import Any, List, Optional
 import cv2
 import numpy as np
 from PIL import Image
+from insightface.app.common import Face
+from insightface.utils import face_align
 
 log = logging.getLogger(__name__)
 
@@ -72,6 +74,60 @@ class Detector:
         # an already indexed library.
         self.signature = f"insightface:{self.model_name}:arcface512:{self.min_score}:{self.min_size}:v2"
         log.info("InsightFace initialized with %s on %s", self.model_name, self.device)
+
+    def detect_batch(self, images: List[Image.Image]) -> List[List[Detection]]:
+        """Detect faces per image and batch ArcFace recognition across images.
+
+        SCRFD detection remains per image, but the expensive ArcFace embedding
+        inference receives all aligned crops in one OpenVINO call. Fall back to
+        the established single-image path if the loaded recognition model does
+        not expose the batch API.
+        """
+        if not images:
+            return []
+        recognition = self.app.models.get("recognition")
+        if recognition is None or not hasattr(recognition, "get_feat"):
+            return [self.detect(image) for image in images]
+
+        bgr_images = [cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2BGR) for image in images]
+        pending = []
+        results: List[List[Detection]] = [[] for _ in images]
+        for image_index, bgr in enumerate(bgr_images):
+            bboxes, kpss = self.app.det_model.detect(bgr, max_num=0, metric="default")
+            for face_index in range(bboxes.shape[0]):
+                bbox = bboxes[face_index, 0:4]
+                score = float(bboxes[face_index, 4])
+                if score < self.min_score:
+                    continue
+                clamped = valid_box(bbox.tolist(), images[image_index].width,
+                                    images[image_index].height, self.min_size)
+                if clamped is None or kpss is None:
+                    continue
+                face = Face(bbox=bbox, kps=kpss[face_index], det_score=score)
+                aligned = face_align.norm_crop(bgr, landmark=face.kps,
+                                               image_size=recognition.input_size[0])
+                pending.append((image_index, face, clamped, aligned))
+
+        if not pending:
+            return results
+        embeddings = recognition.get_feat([item[3] for item in pending])
+        for item, embedding in zip(pending, embeddings):
+            image_index, face, clamped, _ = item
+            for taskname, model in self.app.models.items():
+                if taskname not in ("detection", "recognition"):
+                    model.get(bgr_images[image_index], face)
+            emb = embedding.astype(np.float32)
+            norm = np.linalg.norm(emb)
+            if norm > 0:
+                emb = emb / norm
+            results[image_index].append(Detection(
+                box=clamped,
+                score=round(float(face.det_score), 4),
+                embedding=emb,
+                gender=-1 if getattr(face, "gender", None) is None else int(face.gender),
+                age=-1 if getattr(face, "age", None) is None else int(face.age),
+            ))
+        return results
 
     def info(self) -> dict:
         return {

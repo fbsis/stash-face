@@ -465,6 +465,12 @@ body {
   50% { opacity: 1; transform: scale(1.35); }
 }
 .media-list { display: grid; gap: 0.5rem; }
+.suggestions-list { display: grid; gap: 0.75rem; }
+.suggestion-card { display: flex; gap: 1rem; align-items: center; padding: 1rem; border: 1px solid var(--border); border-radius: 0.75rem; background: var(--surface); }
+.suggestion-avatar { width: 64px; height: 64px; object-fit: cover; border-radius: 0.5rem; background: var(--surface-alt); }
+.suggestion-body { display: grid; gap: 0.3rem; min-width: 0; }
+.suggestion-reason { color: var(--muted); font-size: 0.9rem; }
+.suggestion-actions { display: flex; gap: 0.5rem; margin-top: 0.4rem; }
 
 @media (max-width: 768px) {
   .processing-layout { grid-template-columns: 1fr; }

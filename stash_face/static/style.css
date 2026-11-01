@@ -465,6 +465,8 @@ body {
   50% { opacity: 1; transform: scale(1.35); }
 }
 .media-list { display: grid; gap: 0.5rem; }
+.cluster-status { color: var(--primary); font-weight: 600; }
+.status-legend { color: var(--muted); font-size: 0.82rem; }
 .suggestions-list { display: grid; gap: 0.75rem; }
 .suggestion-card { display: flex; gap: 1rem; align-items: center; padding: 1rem; border: 1px solid var(--border); border-radius: 0.75rem; background: var(--surface); }
 .suggestion-avatar { width: 64px; height: 64px; object-fit: cover; border-radius: 0.5rem; background: var(--surface-alt); }

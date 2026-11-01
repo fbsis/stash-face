@@ -302,12 +302,28 @@ class Store:
             job_counts = {f"{row['kind']}_{row['state']}": row["count"] for row in con.execute("SELECT kind, state, count(*) AS count FROM jobs GROUP BY kind, state")}
             total = sum(counts.values())
             completed = sum(counts.get(state, 0) for state in ("indexed", "clustered", "approved", "no_faces", "ignored"))
+            cluster_row = con.execute(
+                """SELECT id, state, stage, detail, result, error, updated_at
+                   FROM jobs WHERE kind='cluster'
+                   ORDER BY CASE WHEN state IN ('queued','running','retry') THEN 0 ELSE 1 END,
+                            updated_at DESC LIMIT 1"""
+            ).fetchone()
+            clustering = {"state": "never", "job_id": None}
+            if cluster_row:
+                clustering = dict(cluster_row)
+                clustering["job_id"] = clustering.pop("id")
+                if clustering.get("result"):
+                    try:
+                        clustering["result"] = json.loads(clustering["result"])
+                    except (TypeError, ValueError):
+                        pass
             return {
                 "media_total": total,
                 "media_completed": completed,
                 "percent": round(completed * 100 / total, 2) if total else 0,
                 "statuses": counts,
                 "jobs": job_counts,
+                "clustering": clustering,
             }
 
     def save_detection(

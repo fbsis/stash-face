@@ -114,6 +114,19 @@ async function loadProgress() {
       .reduce((sum, [, count]) => sum + count, 0);
     $("media-progress").textContent = `${progress.media_completed || 0} / ${progress.media_total || 0} media indexed (${progress.percent || 0}%). ` +
       `${queued} queued, ${running} running, ${progress.statuses?.unindexed || 0} unindexed, ${progress.statuses?.failed || 0} failed.`;
+    const clustering = progress.clustering || {};
+    const clusterResult = clustering.result || {};
+    const clusterFaces = clusterResult.faces_evaluated;
+    const clusterText = clustering.state === "running"
+      ? `DBSCAN: em execução${clustering.detail ? ` · ${clustering.detail}` : ""}`
+      : clustering.state === "queued" || clustering.state === "retry"
+        ? `DBSCAN: aguardando execução (${clustering.state})`
+        : clustering.state === "done"
+          ? `DBSCAN: concluído${clusterFaces !== undefined ? ` · ${clusterFaces} faces avaliadas` : ""}`
+          : clustering.state === "failed"
+            ? `DBSCAN: falhou · ${clustering.error || "ver detalhes do job"}`
+            : "DBSCAN: ainda não executado";
+    $("cluster-progress").textContent = clusterText;
   } catch (err) {
     notify("Error loading progress: " + err.message);
   }

@@ -86,6 +86,7 @@ def worker_process_entry():
 def create_app() -> FastAPI:
     settings = Settings.from_env()
     store = Store(settings.data_dir)
+    stash = StashClient(settings)
     runtime = {"process": None}
     ready_path = settings.data_dir / "worker.ready.json"
 
@@ -106,6 +107,7 @@ def create_app() -> FastAPI:
             process.join(timeout=10)
             if process.is_alive():
                 process.kill()
+        stash.close()
 
     def auth_dep(tok: Optional[str] = Security(api_token)):
         return check_auth(settings, tok)
@@ -202,7 +204,7 @@ def create_app() -> FastAPI:
                     stash.add_scene_performers([suggestion["source_id"]], [suggestion["performer_id"]])
             except Exception as exc:
                 log.warning("Could not apply suggestion %s to Stash: %s", suggestion_id, exc)
-                raise HTTPException(status_code=502, detail="Stash rejected the suggested tag") from exc
+                raise HTTPException(status_code=502, detail=f"Stash rejected the suggested tag: {exc}") from exc
         result = store.decide_suggestion(suggestion_id, req.decision)
         return {"success": True, "decision": req.decision, "suggestion": result}
 

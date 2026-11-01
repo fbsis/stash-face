@@ -3,6 +3,8 @@
 const $ = id => document.getElementById(id);
 let token = "";
 let stashUrl = "";
+let activeEnvironment = null;
+let environments = [];
 let currentFilter = "all";
 let currentSearch = "";
 let selectedPerson = null;
@@ -39,9 +41,51 @@ const notify = (text, timeout = 4000) => {
   }
 };
 
+function normalizeServiceUrl(value) {
+  const url = new URL(value.trim());
+  if (!['http:', 'https:'].includes(url.protocol)) throw new Error("Service URL must use http or https.");
+  return url.href.replace(/\/$/, "");
+}
+
+function saveEnvironments() {
+  localStorage.setItem("stash_face_environments", JSON.stringify(environments));
+  if (activeEnvironment) localStorage.setItem("stash_face_active_environment", activeEnvironment.id);
+}
+
+function renderEnvironmentSelect() {
+  const select = $("environment-select");
+  select.replaceChildren();
+  for (const environment of environments) {
+    const option = document.createElement("option");
+    option.value = environment.id;
+    option.textContent = environment.name;
+    option.selected = activeEnvironment?.id === environment.id;
+    select.append(option);
+  }
+  select.disabled = environments.length === 0;
+  if (!environments.length) {
+    const option = document.createElement("option");
+    option.textContent = "Add an environment first";
+    option.value = "";
+    select.append(option);
+  }
+}
+
+function loadEnvironments() {
+  try {
+    environments = JSON.parse(localStorage.getItem("stash_face_environments") || "[]");
+  } catch (_) { environments = []; }
+  const legacyToken = localStorage.getItem("stash_face_token");
+  if (!environments.length && legacyToken) {
+    environments = [{ id: "local", name: "Current Stash Face", apiUrl: window.location.origin, token: legacyToken }];
+    saveEnvironments();
+  }
+  renderEnvironmentSelect();
+}
+
 async function api(path, method = "GET", data) {
-  if (!token) throw new Error("Not connected. Enter service token first.");
-  const response = await fetch(path, {
+  if (!activeEnvironment?.token) throw new Error("Not connected. Select an environment first.");
+  const response = await fetch(`${activeEnvironment.apiUrl}${path}`, {
     method,
     headers: {
       "X-API-Token": token,
@@ -57,15 +101,19 @@ async function api(path, method = "GET", data) {
   return body;
 }
 
-async function connect(provided) {
-  if (!provided) return;
-  token = provided.trim();
-  $("token").value = token;
+async function connect(environment) {
+  if (!environment) return;
+  activeEnvironment = environment;
+  token = environment.token;
+  stashUrl = "";
+  renderEnvironmentSelect();
 
   try {
     const health = await api("/health");
     stashUrl = (health.stash_url || "").replace(/\/$/, "");
-    localStorage.setItem("stash_face_token", token);
+    environment.stashUrl = stashUrl;
+    environments = environments.map(item => item.id === environment.id ? environment : item);
+    saveEnvironments();
 
     $("connect-form").hidden = true;
     $("action-controls").hidden = false;
@@ -73,7 +121,7 @@ async function connect(provided) {
     $("workspace").hidden = false;
 
     updateStats(health.stats);
-    notify(`Connected to Stash Face (${health.detector.model_name})`);
+    notify(`Connected to ${environment.name} (${health.detector.model_name})`);
 
     await loadPeople();
     await loadProgress();
@@ -81,16 +129,16 @@ async function connect(provided) {
     clearInterval(progressTimer);
     progressTimer = setInterval(() => { loadProgress(); loadJobs(); if (!$("media-panel").hidden) loadMedia(); if (!$("suggestions-panel").hidden) loadSuggestions(); if (!$("statistics-panel").hidden) loadStatistics(); }, 3000);
   } catch (err) {
-    localStorage.removeItem("stash_face_token");
+    activeEnvironment = null;
+    token = "";
     notify("Connection failed: " + err.message);
   }
 }
 
 function disconnect() {
-  localStorage.removeItem("stash_face_token");
   token = "";
   stashUrl = "";
-  $("token").value = "";
+  activeEnvironment = null;
   $("connect-form").hidden = false;
   $("action-controls").hidden = true;
   $("stats-bar").hidden = true;
@@ -98,7 +146,8 @@ function disconnect() {
   clearInterval(progressTimer);
   progressTimer = null;
   $("people-grid").replaceChildren();
-  notify("Disconnected. Token forgotten.");
+  renderEnvironmentSelect();
+  notify("Disconnected from the current environment. Credentials remain saved.");
 }
 
 function updateStats(stats) {
@@ -731,7 +780,32 @@ function closePersonModal() {
 // Event Listeners
 $("connect-form").onsubmit = event => {
   event.preventDefault();
-  connect($("token").value);
+  const selected = environments.find(item => item.id === $("environment-select").value);
+  connect(selected);
+};
+
+$("add-environment").onclick = () => {
+  $("environment-form").reset();
+  $("environment-dialog").showModal();
+};
+$("cancel-environment").onclick = () => $("environment-dialog").close();
+$("environment-form").onsubmit = event => {
+  event.preventDefault();
+  try {
+    const name = $("environment-name").value.trim();
+    const apiUrl = normalizeServiceUrl($("environment-url").value);
+    const serviceToken = $("environment-token").value.trim();
+    if (!name || !serviceToken) throw new Error("Environment name and service token are required.");
+    const environment = { id: `env-${Date.now()}-${Math.random().toString(16).slice(2)}`, name, apiUrl, token: serviceToken };
+    environments.push(environment);
+    saveEnvironments();
+    renderEnvironmentSelect();
+    $("environment-select").value = environment.id;
+    $("environment-dialog").close();
+    connect(environment);
+  } catch (err) {
+    notify("Could not add environment: " + err.message);
+  }
 };
 
 $("btn-disconnect").onclick = disconnect;
@@ -921,10 +995,8 @@ $("modal-hide-btn").onclick = async () => {
   }
 };
 
-// Auto-connect on page load if token is stored in localStorage
+// Auto-connect only when there is one saved environment.
 document.addEventListener("DOMContentLoaded", () => {
-  const saved = localStorage.getItem("stash_face_token");
-  if (saved) {
-    connect(saved);
-  }
+  loadEnvironments();
+  if (environments.length === 1) connect(environments[0]);
 });

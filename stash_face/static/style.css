@@ -101,6 +101,14 @@ body {
   gap: 0.5rem;
 }
 
+.environment-dialog { width: min(440px, calc(100vw - 2rem)); color: var(--text-main); background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.25rem; }
+.environment-dialog::backdrop { background: rgba(0, 0, 0, 0.65); }
+.environment-dialog h2 { margin-top: 0; }
+.environment-dialog label { display: block; margin: 0.75rem 0 0.3rem; color: var(--text-muted); font-size: 0.82rem; }
+.environment-dialog input { width: 100%; box-sizing: border-box; }
+.dialog-help { color: var(--text-muted); font-size: 0.82rem; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem; }
+
 /* Botoes */
 .btn {
   display: inline-flex;
@@ -342,13 +350,14 @@ body {
   font-size: 1.1rem;
 }
 
-.media-toolbar select {
+.media-toolbar select, .connect-form select {
   padding: 0.4rem 0.6rem;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   background: var(--bg-input);
   color: var(--text-main);
 }
+.connect-form { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
 
 .media-progress {
   color: var(--text-muted);

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Security, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.security import APIKeyHeader
 from fastapi.staticfiles import StaticFiles
@@ -97,6 +98,13 @@ def create_app() -> FastAPI:
     ready_path = settings.data_dir / "worker.ready.json"
 
     app = FastAPI(title="Stash Face Recognition", version="1.0.0", docs_url=None, redoc_url=None)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["X-API-Token", "Content-Type"],
+    )
 
     @app.on_event("startup")
     def startup():

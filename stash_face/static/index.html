@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Stash Face Recognition — Immich-Style AI Recognition</title>
-  <link rel="stylesheet" href="/assets/style.css?v=5">
-  <script src="/assets/app.js?v=5" defer></script>
+  <link rel="stylesheet" href="/assets/style.css?v=6">
+  <script src="/assets/app.js?v=6" defer></script>
 </head>
 <body>
   <!-- Main Header -->
@@ -29,8 +29,9 @@
     <div class="header-right">
       <!-- Connection Form (Visible only when disconnected) -->
       <form id="connect-form" class="connect-form">
-        <input id="token" type="password" placeholder="Service Secret Token (FACE_TOKEN)" autocomplete="off" required>
+        <select id="environment-select" aria-label="Select Stash Face environment" required></select>
         <button type="submit" class="btn btn-primary">Connect</button>
+        <button id="add-environment" type="button" class="btn btn-secondary">Add remote Stash instance</button>
       </form>
 
       <!-- Action Controls (Visible when connected) -->
@@ -44,10 +45,27 @@
         <button id="btn-sync-performers" class="btn btn-action" title="Sync Performers and avatars from Stash">
           <span>🔄</span> Sync Performers
         </button>
-        <button id="btn-disconnect" class="btn btn-ghost" title="Disconnect and forget token">Disconnect</button>
+        <button id="btn-disconnect" class="btn btn-ghost" title="Disconnect from the current environment">Disconnect</button>
       </div>
     </div>
   </header>
+
+  <dialog id="environment-dialog" class="environment-dialog">
+    <form id="environment-form" method="dialog">
+      <h2>Add remote Stash instance</h2>
+      <p class="dialog-help">Register a Stash Face service endpoint. The FACE_TOKEN is stored locally in this browser.</p>
+      <label for="environment-name">Environment name</label>
+      <input id="environment-name" type="text" placeholder="Home Stash" required maxlength="80">
+      <label for="environment-url">Stash Face service URL</label>
+      <input id="environment-url" type="url" placeholder="http://192.168.1.116:8765" required>
+      <label for="environment-token">Service token (FACE_TOKEN)</label>
+      <input id="environment-token" type="password" autocomplete="new-password" required>
+      <div class="dialog-actions">
+        <button id="cancel-environment" type="button" class="btn btn-ghost">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save and connect</button>
+      </div>
+    </form>
+  </dialog>
 
   <!-- Status / Notification Banner -->
   <div id="status-banner" class="status-banner" hidden>

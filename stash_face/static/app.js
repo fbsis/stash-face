@@ -9,6 +9,8 @@ let allPeople = [];
 let progressTimer = null;
 let selectedJobId = null;
 let facesOffset = 0;
+let expandedSuggestionId = null;
+let suggestionsSignature = "";
 const cropUrls = new Set();
 
 async function setCropImage(img, filename) {
@@ -380,7 +382,8 @@ function addSuggestionDetailRow(parent, label, value) {
 
 async function showSuggestionDetail(item, body, card) {
   const existing = body.querySelector(".suggestion-detail");
-  if (existing) { existing.remove(); card.classList.remove("expanded"); return; }
+  if (existing) { existing.remove(); card.classList.remove("expanded"); expandedSuggestionId = null; return; }
+  expandedSuggestionId = item.id;
   card.classList.add("expanded");
   const detail = document.createElement("div");
   detail.className = "suggestion-detail";
@@ -431,9 +434,17 @@ async function loadSuggestions() {
   try {
     const status = $("suggestions-status").value;
     const result = await api(`/suggestions?status=${encodeURIComponent(status)}&limit=100`);
+    const signature = `${status}:${JSON.stringify(result.items.map(item => [item.id, item.status, item.updated_at]))}`;
+    if (signature === suggestionsSignature) {
+      $("suggestions-progress").textContent = `${result.total} suggestions`;
+      return;
+    }
+    suggestionsSignature = signature;
+    const previousExpandedId = expandedSuggestionId;
     const list = $("suggestions-list");
     list.replaceChildren();
     if (!result.items.length) {
+      expandedSuggestionId = null;
       list.textContent = "No suggestions to review.";
       $("suggestions-progress").textContent = "0 suggestions";
       return;
@@ -473,7 +484,9 @@ async function loadSuggestions() {
         const state = document.createElement("span"); state.className = "badge"; state.textContent = item.status; body.append(state);
       }
       card.append(body); list.append(card);
+      if (item.id === previousExpandedId) showSuggestionDetail(item, body, card);
     }
+    if (previousExpandedId && !result.items.some(item => item.id === previousExpandedId)) expandedSuggestionId = null;
     $("suggestions-progress").textContent = `${result.total} suggestions`;
   } catch (err) { notify("Error loading suggestions: " + err.message); }
 }

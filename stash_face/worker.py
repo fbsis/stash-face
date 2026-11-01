@@ -89,7 +89,7 @@ class Worker:
                     self.store.fail(job["id"], str(exc))
                 finally:
                     if job["kind"] in ("image", "video") and not self.store.has_pending_media_jobs():
-                        self.store.enqueue("cluster", {"force": False}, "cluster:after-media")
+                        self.store.enqueue("cluster", {"force": False}, "cluster:singleton")
                     self.local.job_id = None
         finally:
             # The shared Stash client and process lock are closed by stop(), after all threads exit.
@@ -228,7 +228,7 @@ class Worker:
             # job only requests path-based metadata tagging now.
             self.store.enqueue("auto_tag", {"paths": list(self.settings.auto_tag_paths)}, "auto_tag:after-scan")
         else:
-            self.store.enqueue("cluster", {"force": False}, "cluster:after-scan")
+            self.store.enqueue("cluster", {"force": False}, "cluster:singleton")
 
         return {"enqueued": enqueued, "unchanged": skipped, "images_seen": len(seen), "videos_seen": video_count}
 

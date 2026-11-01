@@ -211,7 +211,7 @@ def create_app() -> FastAPI:
             payload["image_id"] = req.image_id
             dedupe_key = f"{req.action}:{req.image_id}:{req.force}"
         else:
-            dedupe_key = f"{req.action}:{req.force}:{int(req.force)}"
+            dedupe_key = "cluster:singleton" if req.action == "cluster" else f"{req.action}:{req.force}:{int(req.force)}"
 
         job_id, created = store.enqueue(req.action, payload, dedupe_key)
         return {"job_id": job_id, "created": created, "action": req.action}

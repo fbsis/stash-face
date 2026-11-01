@@ -819,6 +819,13 @@ class Store:
             ).fetchone()
             if not row:
                 return None
+            if row["kind"] == "cluster":
+                other = con.execute(
+                    "SELECT 1 FROM jobs WHERE kind='cluster' AND state='running' AND id<>? LIMIT 1",
+                    (row["id"],),
+                ).fetchone()
+                if other:
+                    return None
             con.execute(
                 "UPDATE jobs SET state='running', stage='starting', detail=NULL, attempts=attempts+1, updated_at=? WHERE id=?",
                 (now, row["id"]),

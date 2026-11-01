@@ -439,8 +439,10 @@ $("btn-scan").onclick = async () => {
 
 $("btn-cluster").onclick = async () => {
   try {
-    await api("/jobs", "POST", { action: "cluster", force: true });
-    notify("Final DBSCAN clustering forced for the currently indexed media.");
+    const result = await api("/jobs", "POST", { action: "cluster", force: true });
+    notify(result.created
+      ? "Final DBSCAN clustering forced for the currently indexed media."
+      : "A DBSCAN clustering job is already running or queued.");
     setTimeout(loadPeople, 3000);
   } catch (err) {
     notify("Failed to start clustering: " + err.message);

@@ -53,21 +53,24 @@ function saveEnvironments() {
 }
 
 function renderEnvironmentSelect() {
-  const select = $("environment-select");
-  select.replaceChildren();
-  for (const environment of environments) {
-    const option = document.createElement("option");
-    option.value = environment.id;
-    option.textContent = environment.name;
-    option.selected = activeEnvironment?.id === environment.id;
-    select.append(option);
-  }
-  select.disabled = environments.length === 0;
-  if (!environments.length) {
-    const option = document.createElement("option");
-    option.textContent = "Add an environment first";
-    option.value = "";
-    select.append(option);
+  for (const id of ["environment-select", "connected-environment-select"]) {
+    const select = $(id);
+    if (!select) continue;
+    select.replaceChildren();
+    for (const environment of environments) {
+      const option = document.createElement("option");
+      option.value = environment.id;
+      option.textContent = environment.name;
+      option.selected = activeEnvironment?.id === environment.id;
+      select.append(option);
+    }
+    select.disabled = environments.length === 0;
+    if (!environments.length) {
+      const option = document.createElement("option");
+      option.textContent = "Add an environment first";
+      option.value = "";
+      select.append(option);
+    }
   }
 }
 
@@ -784,9 +787,15 @@ $("connect-form").onsubmit = event => {
   connect(selected);
 };
 
-$("add-environment").onclick = () => {
+function openEnvironmentDialog() {
   $("environment-form").reset();
   $("environment-dialog").showModal();
+}
+$("add-environment").onclick = openEnvironmentDialog;
+$("add-environment-connected").onclick = openEnvironmentDialog;
+$("connected-environment-select").onchange = event => {
+  const selected = environments.find(item => item.id === event.target.value);
+  if (selected && selected.id !== activeEnvironment?.id) connect(selected);
 };
 $("cancel-environment").onclick = () => $("environment-dialog").close();
 $("environment-form").onsubmit = event => {

@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Stash Face Recognition — Immich-Style AI Recognition</title>
-  <link rel="stylesheet" href="/assets/style.css?v=6">
-  <script src="/assets/app.js?v=6" defer></script>
+  <link rel="stylesheet" href="/assets/style.css?v=7">
+  <script src="/assets/app.js?v=7" defer></script>
 </head>
 <body>
   <!-- Main Header -->
@@ -36,6 +36,8 @@
 
       <!-- Action Controls (Visible when connected) -->
       <div id="action-controls" class="action-controls" hidden>
+        <select id="connected-environment-select" aria-label="Switch Stash Face environment"></select>
+        <button id="add-environment-connected" type="button" class="btn btn-secondary">Add remote</button>
         <button id="btn-scan" class="btn btn-action" title="Scan new images from Stash">
           <span>🔍</span> Scan Library
         </button>

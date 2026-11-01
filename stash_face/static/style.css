@@ -350,7 +350,7 @@ body {
   font-size: 1.1rem;
 }
 
-.media-toolbar select, .connect-form select {
+.media-toolbar select, .connect-form select, .action-controls select {
   padding: 0.4rem 0.6rem;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);

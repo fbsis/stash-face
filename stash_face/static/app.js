@@ -19,7 +19,8 @@ const cropUrls = new Set();
 async function setCropImage(img, filename) {
   if (!filename) return;
   try {
-    const response = await fetch(`/crops/${encodeURIComponent(filename)}`, {
+    const serviceUrl = activeEnvironment?.apiUrl || window.location.origin;
+    const response = await fetch(`${serviceUrl}/crops/${encodeURIComponent(filename)}`, {
       headers: { "X-API-Token": token }, cache: "no-store"
     });
     if (!response.ok) return;

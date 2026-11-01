@@ -75,7 +75,7 @@ async function connect(provided) {
     await loadProgress();
     await loadJobs();
     clearInterval(progressTimer);
-    progressTimer = setInterval(() => { loadProgress(); loadJobs(); if (!$("media-panel").hidden) loadMedia(); if (!$("suggestions-panel").hidden) loadSuggestions(); }, 3000);
+    progressTimer = setInterval(() => { loadProgress(); loadJobs(); if (!$("media-panel").hidden) loadMedia(); if (!$("suggestions-panel").hidden) loadSuggestions(); if (!$("statistics-panel").hidden) loadStatistics(); }, 3000);
   } catch (err) {
     localStorage.removeItem("stash_face_token");
     notify("Connection failed: " + err.message);
@@ -132,6 +132,110 @@ async function loadProgress() {
     $("cluster-progress").textContent = clusterText;
   } catch (err) {
     notify("Error loading progress: " + err.message);
+  }
+}
+
+function formatSeconds(seconds) {
+  if (seconds === null || seconds === undefined) return "—";
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = Math.round(seconds % 60);
+  return `${minutes}m ${remainder}s`;
+}
+
+function renderStatisticsList(id, rows) {
+  const list = $(id);
+  list.replaceChildren();
+  for (const [label, value] of rows) {
+    const term = document.createElement("dt");
+    term.textContent = label;
+    const description = document.createElement("dd");
+    description.textContent = value;
+    list.append(term, description);
+  }
+}
+
+function renderStatisticsCards(cards) {
+  const container = $("statistics-cards");
+  container.replaceChildren();
+  for (const [label, value] of cards) {
+    const card = document.createElement("div");
+    card.className = "statistics-card";
+    const number = document.createElement("strong");
+    number.textContent = value;
+    const caption = document.createElement("span");
+    caption.textContent = label;
+    card.append(number, caption);
+    container.append(card);
+  }
+}
+
+async function loadStatistics() {
+  try {
+    const stats = await api("/statistics");
+    const media = stats.media || {};
+    const faces = stats.faces || {};
+    const clusters = stats.clusters || {};
+    const performance = stats.performance || {};
+    const durations = performance.duration_seconds || {};
+    const allDuration = durations.all || {};
+    const imageDuration = durations.image || {};
+    const videoDuration = durations.video || {};
+    const clustering = stats.clustering || {};
+    const result = clustering.result || {};
+    const imageMedia = media.by_type?.image || {};
+    const videoMedia = media.by_type?.video || {};
+    const imageCompleted = (imageMedia.indexed || 0) + (imageMedia.clustered || 0) + (imageMedia.approved || 0) + (imageMedia.no_faces || 0) + (imageMedia.ignored || 0);
+    const videoCompleted = (videoMedia.indexed || 0) + (videoMedia.clustered || 0) + (videoMedia.approved || 0) + (videoMedia.no_faces || 0) + (videoMedia.ignored || 0);
+
+    renderStatisticsCards([
+      ["Active faces", faces.active || 0],
+      ["Faces without a cluster", faces.unclustered || 0],
+      ["Clusters", clusters.total || 0],
+      ["Media indexed", `${media.percent || 0}%`],
+      ["Median job duration", formatSeconds(allDuration.median_seconds)],
+      ["Jobs completed in the last hour", Object.values(performance.completed_last_hour || {}).reduce((sum, count) => sum + count, 0)],
+    ]);
+    renderStatisticsList("statistics-media", [
+      ["Total media", media.total || 0],
+      ["Completed media", `${media.completed || 0} (${media.percent || 0}%)`],
+      ["Photos", `${imageCompleted} completed / ${imageMedia.unindexed || 0} unindexed`],
+      ["Videos", `${videoCompleted} completed / ${videoMedia.unindexed || 0} unindexed`],
+      ["Media with faces", faces.media_with_faces || 0],
+      ["Average faces per media", faces.average_per_media ?? "—"],
+      ["Median faces per media", faces.median_per_media ?? "—"],
+    ]);
+    renderStatisticsList("statistics-clusters", [
+      ["Active faces", faces.active || 0],
+      ["Faces in clusters", faces.clustered || 0],
+      ["Faces without a cluster", faces.unclustered || 0],
+      ["Named clusters", clusters.named || 0],
+      ["Unnamed clusters", clusters.unnamed || 0],
+      ["Largest cluster", clusters.largest_size || 0],
+      ["Median cluster size", clusters.median_size ?? "—"],
+    ]);
+    renderStatisticsList("statistics-performance", [
+      ["Photo job average", formatSeconds(imageDuration.average_seconds)],
+      ["Photo job median", formatSeconds(imageDuration.median_seconds)],
+      ["Video job average", formatSeconds(videoDuration.average_seconds)],
+      ["Video job median", formatSeconds(videoDuration.median_seconds)],
+      ["All jobs p95", formatSeconds(allDuration.p95_seconds)],
+      ["Photo throughput (last hour)", `${performance.throughput_per_minute_last_hour?.image || 0}/min`],
+      ["Video throughput (last hour)", `${performance.throughput_per_minute_last_hour?.video || 0}/min`],
+    ]);
+    renderStatisticsList("statistics-clustering", [
+      ["State", clustering.state || "unknown"],
+      ["Stage", clustering.stage || "—"],
+      ["Detail", clustering.detail || "—"],
+      ["Faces evaluated", result.faces_evaluated ?? "—"],
+      ["Clusters created", result.clusters_created ?? "—"],
+      ["Performers created", result.performers_created ?? "—"],
+      ["Suggestions created", result.suggestions_created ?? "—"],
+    ]);
+    const generated = stats.generated_at ? new Date(stats.generated_at * 1000).toLocaleString() : "unknown";
+    $("statistics-updated").textContent = `Updated ${generated}. Job durations include queue wait and execution time.`;
+  } catch (err) {
+    $("statistics-updated").textContent = `Statistics unavailable: ${err.message}`;
   }
 }
 
@@ -476,20 +580,24 @@ $("btn-sync-performers").onclick = async () => {
 
 // People / Media / All Faces views
 function setView(view) {
-  const people = view === "people", media = view === "media", suggestions = view === "suggestions";
+  const people = view === "people", media = view === "media", suggestions = view === "suggestions", statistics = view === "statistics";
   $("view-people").classList.toggle("active", people);
   $("view-media").classList.toggle("active", media);
   $("view-faces").classList.toggle("active", view === "faces");
   $("view-suggestions").classList.toggle("active", suggestions);
+  $("view-statistics").classList.toggle("active", statistics);
   $("people-section").hidden = !people;
   $("media-panel").hidden = !media;
   $("faces-panel").hidden = view !== "faces";
   $("suggestions-panel").hidden = !suggestions;
+  $("statistics-panel").hidden = !statistics;
 }
 $("view-people").onclick = () => setView("people");
 $("view-media").onclick = () => { setView("media"); loadMedia(); loadProgress(); };
 $("view-faces").onclick = () => { setView("faces"); loadFaces(); };
 $("view-suggestions").onclick = () => { setView("suggestions"); loadSuggestions(); };
+$("view-statistics").onclick = () => { setView("statistics"); loadStatistics(); };
+$("stats-refresh").onclick = loadStatistics;
 $("suggestions-status").onchange = loadSuggestions;
 $("media-status-filter").onchange = loadMedia;
 $("media-type-filter").onchange = loadMedia;

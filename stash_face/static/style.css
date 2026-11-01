@@ -467,6 +467,16 @@ body {
 .media-list { display: grid; gap: 0.5rem; }
 .cluster-status { color: var(--primary); font-weight: 600; }
 .status-legend { color: var(--muted); font-size: 0.82rem; }
+.statistics-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.75rem; margin-bottom: 1.25rem; }
+.statistics-card { display: flex; flex-direction: column; gap: 0.25rem; padding: 1rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-input); }
+.statistics-card strong { color: var(--primary); font-size: 1.35rem; }
+.statistics-card span { color: var(--text-muted); font-size: 0.78rem; }
+.statistics-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem; }
+.statistics-group { padding: 1rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-input); }
+.statistics-group h3 { margin: 0 0 0.75rem; font-size: 0.95rem; }
+.statistics-group dl { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.45rem 1rem; margin: 0; font-size: 0.82rem; }
+.statistics-group dt { color: var(--text-muted); }
+.statistics-group dd { margin: 0; color: var(--text-main); font-weight: 600; text-align: right; }
 .suggestions-list { display: grid; gap: 0.75rem; }
 .suggestion-card { display: flex; gap: 1rem; align-items: center; padding: 1rem; border: 1px solid var(--border); border-radius: 0.75rem; background: var(--surface); }
 .suggestion-avatar { width: 64px; height: 64px; object-fit: cover; border-radius: 0.5rem; background: var(--surface-alt); }

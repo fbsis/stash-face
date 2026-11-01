@@ -326,6 +326,140 @@ class Store:
                 "clustering": clustering,
             }
 
+    def statistics(self) -> Dict[str, Any]:
+        now = time.time()
+
+        def percentile(values: List[float], fraction: float) -> Optional[float]:
+            if not values:
+                return None
+            ordered = sorted(values)
+            index = min(len(ordered) - 1, max(0, int(round((len(ordered) - 1) * fraction))))
+            return round(ordered[index], 2)
+
+        def duration_summary(values: List[float]) -> Dict[str, Any]:
+            if not values:
+                return {"count": 0, "average_seconds": None, "median_seconds": None, "p95_seconds": None}
+            ordered = sorted(values)
+            return {
+                "count": len(values),
+                "average_seconds": round(sum(values) / len(values), 2),
+                "median_seconds": round(ordered[len(ordered) // 2], 2),
+                "p95_seconds": percentile(values, 0.95),
+            }
+
+        with self.connection() as con:
+            media_rows = con.execute(
+                "SELECT media_type, status, count(*) AS count FROM media GROUP BY media_type, status"
+            ).fetchall()
+            media_by_type: Dict[str, Dict[str, int]] = {"image": {}, "video": {}}
+            for row in media_rows:
+                media_by_type.setdefault(row["media_type"], {})[row["status"]] = row["count"]
+            media_total = sum(sum(statuses.values()) for statuses in media_by_type.values())
+            media_completed = sum(
+                count for statuses in media_by_type.values()
+                for status, count in statuses.items()
+                if status in ("indexed", "clustered", "approved", "no_faces", "ignored")
+            )
+
+            face_counts = con.execute(
+                """SELECT count(*) AS total,
+                          sum(cluster_id IS NOT NULL) AS clustered,
+                          sum(cluster_id IS NULL) AS unclustered
+                   FROM faces WHERE active=1"""
+            ).fetchone()
+            face_per_media = [
+                row[0] for row in con.execute(
+                    "SELECT face_count FROM media WHERE face_count > 0"
+                ).fetchall()
+            ]
+            cluster_sizes = [
+                row[0] for row in con.execute(
+                    "SELECT count(*) FROM faces WHERE active=1 AND cluster_id IS NOT NULL GROUP BY cluster_id"
+                ).fetchall()
+            ]
+            cluster_counts = con.execute(
+                """SELECT count(*) AS total,
+                          sum(hidden=0 AND performer_id IS NOT NULL) AS named,
+                          sum(hidden=0 AND performer_id IS NULL) AS unnamed,
+                          sum(hidden=1) AS hidden
+                   FROM clusters"""
+            ).fetchone()
+            job_rows = con.execute(
+                "SELECT kind, state, count(*) AS count FROM jobs GROUP BY kind, state"
+            ).fetchall()
+            job_counts = {f"{row['kind']}_{row['state']}": row["count"] for row in job_rows}
+            duration_rows = con.execute(
+                """SELECT kind, (updated_at - created_at) AS duration
+                   FROM jobs WHERE state='done' AND kind IN ('image', 'video')
+                   AND updated_at >= created_at"""
+            ).fetchall()
+            durations: Dict[str, List[float]] = {"image": [], "video": []}
+            for row in duration_rows:
+                durations.setdefault(row["kind"], []).append(max(0.0, row["duration"]))
+            recent_rows = con.execute(
+                """SELECT kind, count(*) AS count FROM jobs
+                   WHERE state='done' AND kind IN ('image', 'video') AND updated_at >= ?
+                   GROUP BY kind""",
+                (now - 3600,),
+            ).fetchall()
+            recent = {row["kind"]: row["count"] for row in recent_rows}
+            cluster_row = con.execute(
+                """SELECT id, state, stage, detail, result, error, created_at, updated_at
+                   FROM jobs WHERE kind='cluster'
+                   ORDER BY CASE WHEN state IN ('queued','running','retry') THEN 0 ELSE 1 END,
+                            updated_at DESC LIMIT 1"""
+            ).fetchone()
+
+        clustering = {"state": "never", "job_id": None}
+        if cluster_row:
+            clustering = dict(cluster_row)
+            clustering["job_id"] = clustering.pop("id")
+            if clustering.get("result"):
+                try:
+                    clustering["result"] = json.loads(clustering["result"])
+                except (TypeError, ValueError):
+                    pass
+
+        all_durations = durations["image"] + durations["video"]
+        return {
+            "generated_at": now,
+            "media": {
+                "total": media_total,
+                "completed": media_completed,
+                "percent": round(media_completed * 100 / media_total, 2) if media_total else 0,
+                "by_type": media_by_type,
+            },
+            "faces": {
+                "active": int(face_counts["total"] or 0),
+                "clustered": int(face_counts["clustered"] or 0),
+                "unclustered": int(face_counts["unclustered"] or 0),
+                "media_with_faces": len(face_per_media),
+                "average_per_media": round(sum(face_per_media) / len(face_per_media), 2) if face_per_media else 0,
+                "median_per_media": percentile(face_per_media, 0.5),
+            },
+            "clusters": {
+                "total": int(cluster_counts["total"] or 0),
+                "named": int(cluster_counts["named"] or 0),
+                "unnamed": int(cluster_counts["unnamed"] or 0),
+                "hidden": int(cluster_counts["hidden"] or 0),
+                "largest_size": max(cluster_sizes) if cluster_sizes else 0,
+                "median_size": percentile(cluster_sizes, 0.5),
+            },
+            "jobs": job_counts,
+            "performance": {
+                "duration_seconds": {
+                    "image": duration_summary(durations["image"]),
+                    "video": duration_summary(durations["video"]),
+                    "all": duration_summary(all_durations),
+                },
+                "completed_last_hour": recent,
+                "throughput_per_minute_last_hour": {
+                    kind: round(count / 60, 2) for kind, count in recent.items()
+                },
+            },
+            "clustering": clustering,
+        }
+
     def save_detection(
         self,
         image_id: str,

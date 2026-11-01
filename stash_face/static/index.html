@@ -63,6 +63,7 @@
         <button id="view-media" class="pill">Media Index</button>
         <button id="view-faces" class="pill">All Faces</button>
         <button id="view-suggestions" class="pill">Suggestions</button>
+        <button id="view-statistics" class="pill">Statistics</button>
       </div>
       <div class="search-box">
         <span class="search-icon">🔍</span>
@@ -73,6 +74,33 @@
         <button class="pill" data-filter="unnamed">Unnamed</button>
         <button class="pill" data-filter="named">Linked</button>
         <button class="pill" data-filter="hidden">Hidden</button>
+      </div>
+    </section>
+
+    <section id="statistics-panel" class="media-panel" hidden>
+      <div class="media-toolbar">
+        <h2>Statistics</h2>
+        <button id="stats-refresh" class="btn btn-secondary">Refresh</button>
+      </div>
+      <p id="statistics-updated" class="media-progress">Loading statistics...</p>
+      <div id="statistics-cards" class="statistics-cards"></div>
+      <div class="statistics-columns">
+        <section class="statistics-group">
+          <h3>Media and detection</h3>
+          <dl id="statistics-media"></dl>
+        </section>
+        <section class="statistics-group">
+          <h3>Clusters and faces</h3>
+          <dl id="statistics-clusters"></dl>
+        </section>
+        <section class="statistics-group">
+          <h3>Processing performance</h3>
+          <dl id="statistics-performance"></dl>
+        </section>
+        <section class="statistics-group">
+          <h3>DBSCAN</h3>
+          <dl id="statistics-clustering"></dl>
+        </section>
       </div>
     </section>
 

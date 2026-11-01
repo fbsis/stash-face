@@ -146,6 +146,10 @@ def create_app() -> FastAPI:
     def progress(_: None = Depends(auth_dep)):
         return store.progress()
 
+    @app.get("/statistics")
+    def statistics(_: None = Depends(auth_dep)):
+        return store.statistics()
+
     @app.get("/faces")
     def faces(
         face_filter: str = Query("all", alias="filter", pattern="^(all|clustered|unclustered|named|unknown)$"),

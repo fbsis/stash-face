@@ -11,7 +11,7 @@ tasks:
   - name: Test Remote Connection
     defaultArgs:
       action: health
-  - name: Index Photos & Videos (6 Frames per Video)
+  - name: Index Photos & Videos (3 Frames per Video)
     defaultArgs:
       action: scan
   - name: Auto-tag Content from File Paths

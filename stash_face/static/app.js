@@ -117,15 +117,18 @@ async function loadProgress() {
     const clustering = progress.clustering || {};
     const clusterResult = clustering.result || {};
     const clusterFaces = clusterResult.faces_evaluated;
-    const clusterText = clustering.state === "running"
-      ? `DBSCAN: em execução${clustering.detail ? ` · ${clustering.detail}` : ""}`
-      : clustering.state === "queued" || clustering.state === "retry"
-        ? `DBSCAN: aguardando execução (${clustering.state})`
-        : clustering.state === "done"
-          ? `DBSCAN: concluído${clusterFaces !== undefined ? ` · ${clusterFaces} faces avaliadas` : ""}`
-          : clustering.state === "failed"
-            ? `DBSCAN: falhou · ${clustering.error || "ver detalhes do job"}`
-            : "DBSCAN: ainda não executado";
+    const inferredState = clustering.state ||
+      (progress.jobs?.cluster_running ? "running" :
+        progress.jobs?.cluster_queued || progress.jobs?.cluster_retry ? "queued" : "unknown");
+    const clusterText = inferredState === "running"
+      ? `DBSCAN: running${clustering.detail ? ` · ${clustering.detail}` : ""}`
+      : inferredState === "queued" || inferredState === "retry"
+        ? `DBSCAN: queued (${inferredState})`
+        : inferredState === "done"
+          ? `DBSCAN: completed${clusterFaces !== undefined ? ` · ${clusterFaces} faces evaluated` : ""}`
+          : inferredState === "failed"
+            ? `DBSCAN: failed · ${clustering.error || "see job details"}`
+            : "DBSCAN: status unavailable";
     $("cluster-progress").textContent = clusterText;
   } catch (err) {
     notify("Error loading progress: " + err.message);

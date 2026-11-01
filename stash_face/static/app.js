@@ -434,6 +434,21 @@ async function applyIdentityRelation(clusterId, otherClusterId, relation, event)
   }
 }
 
+async function rejectIdentityPair(item, event) {
+  event.stopPropagation();
+  try {
+    const data = await api(`/suggestions/${item.id}`);
+    const others = (data.folder_identities || []).filter(identity => Number(identity.id) !== Number(item.cluster_id));
+    if (others.length !== 1) {
+      notify("Open the evidence and choose the specific identity pair below.");
+      return;
+    }
+    await applyIdentityRelation(item.cluster_id, others[0].id, "different", event);
+  } catch (err) {
+    notify(`Could not identify the folder pair: ${err.message}`);
+  }
+}
+
 async function showSuggestionDetail(item, body, card) {
   const existing = body.querySelector(".suggestion-detail");
   if (existing) { existing.remove(); card.classList.remove("expanded"); expandedSuggestionId = null; return; }
@@ -557,11 +572,18 @@ async function loadSuggestions() {
       try { reason = JSON.parse(item.reason || "{}"); } catch (_) {}
       folder.textContent = `Same folder · ${reason.folder_identities || "?"} identities found`;
       body.append(title, target, folder);
+      if ((reason.folder_identities || 0) > 1) {
+        const pairButton = document.createElement("button");
+        pairButton.className = "btn btn-small btn-ghost identity-pair-button";
+        pairButton.textContent = "This is not the same person";
+        pairButton.onclick = event => rejectIdentityPair(item, event);
+        body.append(pairButton);
+      }
       card.title = "Click to view folder evidence and other unidentified images";
       card.onclick = () => showSuggestionDetail(item, body, card);
       if (item.status === "pending") {
         const actions = document.createElement("div"); actions.className = "suggestion-actions";
-        for (const [decision, label, cls] of [["accepted", "Accept", "btn-primary"], ["rejected", "Reject", "btn-ghost"]]) {
+        for (const [decision, label, cls] of [["accepted", "Accept", "btn-primary"], ["rejected", "Reject media only", "btn-ghost"]]) {
           const button = document.createElement("button"); button.className = `btn btn-small ${cls}`; button.textContent = label;
           button.onclick = async event => {
             event.stopPropagation();

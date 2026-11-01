@@ -493,6 +493,7 @@ body {
 .suggestion-gallery-card span { overflow-wrap: anywhere; }
 .suggestion-detail a { color: var(--primary); }
 .identity-relation-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.35rem; }
+.identity-pair-button { justify-self: start; margin-top: 0.3rem; }
 .suggestion-actions { display: flex; gap: 0.5rem; margin-top: 0.4rem; }
 
 @media (max-width: 768px) {

@@ -440,6 +440,19 @@ class Store:
             rows = con.execute(query, params).fetchall()
             return [dict(r) for r in rows]
 
+    def cluster_media_sources(self, cluster_id: int) -> Dict[str, Set[str]]:
+        with self.connection() as con:
+            rows = con.execute(
+                """SELECT DISTINCT m.media_type, m.media_key, m.source_id
+                   FROM faces f JOIN media m ON m.media_key=f.image_id
+                   WHERE f.cluster_id=? AND f.active=1""",
+                (cluster_id,),
+            ).fetchall()
+        return {
+            "images": {str(r[1]) for r in rows if r[0] == "image"},
+            "scenes": {str(r[2]) for r in rows if r[0] == "video"},
+        }
+
     def get_cluster(self, cluster_id: int) -> Optional[Dict[str, Any]]:
         with self.connection() as con:
             row = con.execute("SELECT * FROM clusters WHERE id=?", (cluster_id,)).fetchone()

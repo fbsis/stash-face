@@ -24,6 +24,7 @@ class Settings:
     min_faces: int = 2
     performer_threshold: float = 0.42
     auto_tag_stash: bool = True
+    auto_create_unknown_performers: bool = True
     device: str = "CPU"
     workers: int = 1
     min_score: float = 0.5
@@ -74,6 +75,7 @@ class Settings:
             min_faces=int(os.getenv("FACE_MIN_FACES", "2")),
             performer_threshold=float(os.getenv("FACE_PERFORMER_THRESHOLD", "0.42")),
             auto_tag_stash=env_bool("FACE_AUTO_TAG_STASH", True),
+            auto_create_unknown_performers=env_bool("FACE_AUTO_CREATE_UNKNOWN_PERFORMERS", True),
             device=os.getenv("FACE_DEVICE", "CPU").upper(),
             workers=int(os.getenv("FACE_WORKERS", str(os.cpu_count() or 1))),
             min_score=float(os.getenv("FACE_MIN_SCORE", "0.5")),

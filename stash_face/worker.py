@@ -1,10 +1,12 @@
 """Background worker for face processing, embedding extraction, and clustering."""
+import base64
 import fcntl
 import json
 import logging
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List
 
 import numpy as np
@@ -377,6 +379,41 @@ class Worker:
         log.info("Requested Stash auto-tag from paths: %s", paths)
         return {"accepted": True, "paths": paths}
 
+    def create_unknown_performers(self) -> int:
+        if not self.settings.auto_create_unknown_performers:
+            return 0
+        created_count = 0
+        for person in self.store.get_clusters(filter_type="unnamed"):
+            cluster_id = int(person["id"])
+            name = f"Unknown Person #{cluster_id:04d}"
+            try:
+                performer = self.stash.performer_by_name(name)
+                if performer is None:
+                    data_uri = ""
+                    crop_name = person.get("exemplar_crop")
+                    if crop_name:
+                        crop_path = self.store.crops / Path(crop_name).name
+                        if crop_path.exists():
+                            data_uri = "data:image/jpeg;base64," + base64.b64encode(crop_path.read_bytes()).decode("ascii")
+                    performer = self.stash.create_performer(name, data_uri)
+                performer_id = str(performer["id"])
+                sources = self.store.cluster_media_sources(cluster_id)
+                image_ids = self.store.link_cluster_to_performer(cluster_id, performer_id, name)
+                embedding = self.store.cluster_embedding(cluster_id)
+                if embedding is not None:
+                    self.store.save_known_performer(performer_id, name, performer.get("image_path", ""), embedding)
+                if self.settings.auto_tag_stash:
+                    if sources["images"]:
+                        self.stash.add_performers(sorted(sources["images"]), [performer_id])
+                    if sources["scenes"]:
+                        self.stash.add_scene_performers(sorted(sources["scenes"]), [performer_id])
+                created_count += 1
+                log.info("Created placeholder Performer %s for cluster %s (%d media items)",
+                         name, cluster_id, len(image_ids))
+            except Exception as exc:
+                log.warning("Could not create placeholder Performer for cluster %s: %s", cluster_id, exc)
+        return created_count
+
     def run_clustering(self) -> dict:
         if self.store.has_pending_media_jobs():
             raise UpstreamError("Waiting for photo/video jobs before clustering", retryable=True)
@@ -384,12 +421,15 @@ class Worker:
         removed = self.store.reset_unlinked_clusters()
         faces = self.store.get_all_faces_with_embeddings(unclustered_only=True)
         if not faces:
-            return {"clusters_created": 0, "faces_evaluated": 0, "clusters_reset": removed}
+            return {"clusters_created": 0, "faces_evaluated": 0, "clusters_reset": removed, "performers_created": 0}
 
         assignments, cluster_stats = self.clusterer.cluster(faces)
         created = self.store.apply_clustering(assignments, cluster_stats)
-        log.info("DBSCAN clustering finished: %d clusters created from %d faces", created, len(faces))
-        return {"clusters_created": created, "faces_evaluated": len(faces), "clusters_reset": removed}
+        performers_created = self.create_unknown_performers()
+        log.info("DBSCAN clustering finished: %d clusters created from %d faces; %d placeholder Performers created",
+                 created, len(faces), performers_created)
+        return {"clusters_created": created, "faces_evaluated": len(faces), "clusters_reset": removed,
+                "performers_created": performers_created}
 
     def sync_performers(self) -> dict:
         log.info("Syncing performers from Stash...")

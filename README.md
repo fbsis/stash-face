@@ -131,7 +131,10 @@ when their file fingerprint and model signature are unchanged.
 
 A cluster link stores its centroid as a reference embedding. This is more useful
 than relying only on a small Performer portrait and is updated when the cluster
-is linked.
+is linked. Unknown DBSCAN clusters are automatically created as placeholder
+Stash Performers (`Unknown Person #NNNN`) with an exemplar crop, so they can be
+renamed and reviewed in Stash later. Faces that do not form a cluster remain
+unassigned.
 
 ## Dashboard endpoints
 

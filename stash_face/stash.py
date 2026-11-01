@@ -123,6 +123,13 @@ class StashClient:
     def performer(self, performer_id: str) -> Optional[dict]:
         return self.gql(PERFORMER, {"id": str(performer_id)}).get("findPerformer")
 
+    def performer_by_name(self, name: str) -> Optional[dict]:
+        result = self.performers(q=name)
+        for performer in result.get("performers", []):
+            if str(performer.get("name", "")).casefold() == name.casefold():
+                return performer
+        return None
+
     def add_performers(self, image_ids: List[str], performer_ids: List[str]) -> bool:
         if not image_ids or not performer_ids:
             return True

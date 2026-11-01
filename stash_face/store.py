@@ -812,7 +812,9 @@ class Store:
             row = con.execute(
                 """SELECT * FROM jobs
                    WHERE state IN ('queued', 'retry') AND next_attempt <= ?
-                   ORDER BY created_at ASC LIMIT 1""",
+                   ORDER BY CASE WHEN kind='cluster' AND json_extract(payload, '$.force')=1
+                                 THEN 0 ELSE 1 END,
+                            created_at ASC LIMIT 1""",
                 (now,),
             ).fetchone()
             if not row:

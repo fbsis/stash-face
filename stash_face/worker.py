@@ -88,6 +88,8 @@ class Worker:
                     log.exception("Job %s failed with unexpected exception", job["id"])
                     self.store.fail(job["id"], str(exc))
                 finally:
+                    if job["kind"] in ("image", "video") and not self.store.has_pending_media_jobs():
+                        self.store.enqueue("cluster", {"force": False}, "cluster:after-media")
                     self.local.job_id = None
         finally:
             # The shared Stash client and process lock are closed by stop(), after all threads exit.
@@ -124,7 +126,7 @@ class Worker:
         elif kind == "video":
             return self.process_video(payload)
         elif kind == "cluster":
-            return self.run_clustering()
+            return self.run_clustering(allow_pending=bool(payload.get("force", False)))
         elif kind == "forget":
             return {"forgotten": self.store.forget_image(payload["image_id"])}
         elif kind == "sync_performers":
@@ -221,9 +223,12 @@ class Worker:
                 break
             scene_page += 1
 
-        if enqueued > 0:
-            self.store.enqueue("cluster", {}, "cluster:after-scan")
+        if enqueued > 0 or self.store.has_pending_media_jobs():
+            # The final cluster job is queued by the last media job. This scan
+            # job only requests path-based metadata tagging now.
             self.store.enqueue("auto_tag", {"paths": list(self.settings.auto_tag_paths)}, "auto_tag:after-scan")
+        else:
+            self.store.enqueue("cluster", {"force": False}, "cluster:after-scan")
 
         return {"enqueued": enqueued, "unchanged": skipped, "images_seen": len(seen), "videos_seen": video_count}
 
@@ -437,10 +442,10 @@ class Worker:
                 log.warning("Could not create placeholder Performer for cluster %s: %s", cluster_id, exc)
         return created_count
 
-    def run_clustering(self) -> dict:
-        if self.store.has_pending_media_jobs():
-            raise UpstreamError("Waiting for photo/video jobs before clustering", retryable=True)
-        log.info("Running DBSCAN face clustering...")
+    def run_clustering(self, allow_pending: bool = False) -> dict:
+        if self.store.has_pending_media_jobs() and not allow_pending:
+            raise UpstreamError("Waiting for photo/video jobs before final clustering", retryable=True)
+        log.info("Running final DBSCAN face clustering%s...", " immediately" if allow_pending else "")
         removed = self.store.reset_unlinked_clusters()
         faces = self.store.get_all_faces_with_embeddings(unclustered_only=True)
         if not faces:
@@ -453,7 +458,7 @@ class Worker:
         folder_fallback = self.store.apply_folder_hints(max_clusters=5, max_distance=self.settings.cluster_eps)
         performers_created = self.create_unknown_performers()
         suggestions_created = self.store.create_folder_suggestions()
-        log.info("DBSCAN clustering finished: %d clusters created from %d faces; %d folder fallbacks; "
+        log.info("Final DBSCAN clustering finished: %d clusters created from %d faces; %d folder fallbacks; "
                  "%d suggestions; %d placeholder Performers created", created, len(faces),
                  folder_fallback, suggestions_created, performers_created)
         return {"clusters_created": created, "faces_evaluated": len(faces), "clusters_reset": removed,

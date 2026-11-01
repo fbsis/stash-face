@@ -370,6 +370,63 @@ async function loadMedia() {
   }
 }
 
+function addSuggestionDetailRow(parent, label, value) {
+  const row = document.createElement("div");
+  const strong = document.createElement("strong");
+  strong.textContent = `${label}: `;
+  row.append(strong, document.createTextNode(value));
+  parent.append(row);
+}
+
+async function showSuggestionDetail(item, body, card) {
+  const existing = body.querySelector(".suggestion-detail");
+  if (existing) { existing.remove(); card.classList.remove("expanded"); return; }
+  card.classList.add("expanded");
+  const detail = document.createElement("div");
+  detail.className = "suggestion-detail";
+  detail.textContent = "Loading suggestion evidence...";
+  body.append(detail);
+  try {
+    const data = await api(`/suggestions/${item.id}`);
+    detail.replaceChildren();
+    const reason = data.reason_details || {};
+    addSuggestionDetailRow(detail, "Folder", data.parent_folder || "Unknown folder");
+    addSuggestionDetailRow(detail, "Evidence", "No direct face match; identity inferred from same-folder evidence");
+    addSuggestionDetailRow(detail, "Identities in folder", `${reason.folder_identities || data.folder_identities?.length || 0}`);
+    if (data.folder_identities?.length) {
+      const identityTitle = document.createElement("strong");
+      identityTitle.textContent = "Folder identities";
+      detail.append(identityTitle);
+      const identities = document.createElement("ul");
+      for (const identity of data.folder_identities) {
+        const li = document.createElement("li");
+        li.textContent = `${identity.name || `Cluster #${identity.id}`} · ${identity.face_count || 0} faces` +
+          (identity.performer_id ? ` · Performer #${identity.performer_id}` : " · no Performer linked");
+        identities.append(li);
+      }
+      detail.append(identities);
+    }
+    const unresolvedTitle = document.createElement("strong");
+    unresolvedTitle.textContent = `Other unidentified images in this folder (${data.folder_unidentified_count || 0})`;
+    detail.append(unresolvedTitle);
+    if (data.folder_unidentified_media?.length) {
+      const unresolved = document.createElement("ul");
+      for (const media of data.folder_unidentified_media) {
+        const li = document.createElement("li");
+        li.textContent = `${media.title || media.source_id || media.media_key} · ${media.status}`;
+        unresolved.append(li);
+      }
+      detail.append(unresolved);
+    } else {
+      const none = document.createElement("span");
+      none.textContent = "No other unidentified images found.";
+      detail.append(none);
+    }
+  } catch (err) {
+    detail.textContent = `Could not load suggestion evidence: ${err.message}`;
+  }
+}
+
 async function loadSuggestions() {
   try {
     const status = $("suggestions-status").value;
@@ -398,11 +455,14 @@ async function loadSuggestions() {
       try { reason = JSON.parse(item.reason || "{}"); } catch (_) {}
       folder.textContent = `Same folder · ${reason.folder_identities || "?"} identities found`;
       body.append(title, target, folder);
+      card.title = "Click to view folder evidence and other unidentified images";
+      card.onclick = () => showSuggestionDetail(item, body, card);
       if (item.status === "pending") {
         const actions = document.createElement("div"); actions.className = "suggestion-actions";
         for (const [decision, label, cls] of [["accepted", "Accept", "btn-primary"], ["rejected", "Reject", "btn-ghost"]]) {
           const button = document.createElement("button"); button.className = `btn btn-small ${cls}`; button.textContent = label;
-          button.onclick = async () => {
+          button.onclick = async event => {
+            event.stopPropagation();
             try { await api(`/suggestions/${item.id}/decision`, "POST", { decision }); notify(`Suggestion ${label.toLowerCase()}ed.`); loadSuggestions(); }
             catch (err) { notify("Suggestion failed: " + err.message); }
           };

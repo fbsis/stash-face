@@ -744,12 +744,47 @@ class Store:
         with self.connection() as con:
             row = con.execute(
                 """SELECT s.*, m.media_type, m.source_id, m.file_id, m.title,
+                          m.status AS media_status, m.parent_folder,
                           c.name AS cluster_name, c.performer_id
                    FROM suggestions s JOIN media m ON m.media_key=s.media_key
                    JOIN clusters c ON c.id=s.cluster_id WHERE s.id=?""",
                 (suggestion_id,),
             ).fetchone()
-            return dict(row) if row else None
+            if not row:
+                return None
+            suggestion = dict(row)
+            folder = suggestion.get("parent_folder") or ""
+            identity_rows = con.execute(
+                """SELECT DISTINCT c.id, c.name, c.performer_id, c.face_count
+                   FROM faces f JOIN media im ON im.media_key=f.image_id
+                   JOIN clusters c ON c.id=f.cluster_id
+                   WHERE f.active=1 AND f.cluster_id IS NOT NULL
+                     AND im.media_type='image' AND im.parent_folder=?
+                   ORDER BY c.name, c.id""",
+                (folder,),
+            ).fetchall() if folder else []
+            unidentified_rows = con.execute(
+                """SELECT m.media_key, m.media_type, m.source_id, m.title, m.status
+                   FROM media m
+                   WHERE m.parent_folder=? AND m.media_type='image'
+                     AND m.media_key<>?
+                     AND m.status IN ('indexed', 'no_faces', 'clustered')
+                     AND NOT EXISTS (SELECT 1 FROM media_assignments a WHERE a.media_key=m.media_key)
+                     AND NOT EXISTS (
+                       SELECT 1 FROM faces f
+                       WHERE f.image_id=m.media_key AND f.active=1 AND f.cluster_id IS NOT NULL
+                     )
+                   ORDER BY m.media_key LIMIT 200""",
+                (folder, suggestion["media_key"]),
+            ).fetchall() if folder else []
+            try:
+                suggestion["reason_details"] = json.loads(suggestion.get("reason") or "{}")
+            except (TypeError, ValueError):
+                suggestion["reason_details"] = {}
+            suggestion["folder_identities"] = [dict(item) for item in identity_rows]
+            suggestion["folder_unidentified_media"] = [dict(item) for item in unidentified_rows]
+            suggestion["folder_unidentified_count"] = len(unidentified_rows)
+            return suggestion
 
     def decide_suggestion(self, suggestion_id: int, decision: str) -> Optional[Dict[str, Any]]:
         if decision not in ("accepted", "rejected", "ignored"):

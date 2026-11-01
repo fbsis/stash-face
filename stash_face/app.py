@@ -182,6 +182,13 @@ def create_app() -> FastAPI:
     ):
         return store.suggestions_page(status_filter, limit, offset)
 
+    @app.get("/suggestions/{suggestion_id}")
+    def suggestion_detail(suggestion_id: int, _: None = Depends(auth_dep)):
+        suggestion = store.suggestion(suggestion_id)
+        if not suggestion:
+            raise HTTPException(status_code=404, detail="Suggestion not found")
+        return suggestion
+
     @app.post("/suggestions/{suggestion_id}/decision")
     def decide_suggestion(suggestion_id: int, req: SuggestionDecisionRequest, _: None = Depends(auth_dep)):
         suggestion = store.suggestion(suggestion_id)
